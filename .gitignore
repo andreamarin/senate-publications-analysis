@@ -1,2 +1,3 @@
 .python-version
 notebooks/**
+**/__pycache__/**

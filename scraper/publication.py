@@ -19,16 +19,29 @@ class SenatePublication():
         self.__download_path = download_path
 
         self.__get_date()
+        self.__get_id()
 
     def __get_date(self):
         date_col = self.__table_data[2]
         self.date = datetime.strptime(date_col.text, "%Y/%m/%d")
 
+    def __get_id(self):
+        url = self.__table_data[-1].find("a").attrs["href"]
+
+        if "https" not in url:
+            url = re.sub(r"^/", "", url)
+            self.url = f"{BASE_URL}/{url}"
+        else:
+            self.url = url
+
+        # get id form doc's url
+        hash_obj = hashlib.md5(self.url.encode("utf8"))
+        self.id = hash_obj.hexdigest()
+
     def build_full_doc(self):
         self.__get_summary()
         self.__get_authors_data()
-        self.__get_url()
-        self.__build_id()
+        self.__get_url_data()
         self.__get_full_text()
 
     def __get_summary(self):
@@ -48,15 +61,7 @@ class SenatePublication():
 
         self.parties = list(parties)
 
-    def __get_url(self):
-        url = self.__table_data[-1].find("a").attrs["href"]
-
-        if "https" not in url:
-            url = re.sub(r"^/", "", url)
-            self.url = f"{BASE_URL}/{url}"
-        else:
-            self.url = url
-
+    def __get_url_data(self):
         LOGGER.debug(url)
 
         tries = 1
@@ -75,10 +80,6 @@ class SenatePublication():
             raise Exception("Couldnt load url")
             
         self.__bs = BeautifulSoup(response.text, "lxml")
-
-    def __build_id(self):
-        hash_obj = hashlib.md5(self.url.encode("utf8"))
-        self.id = hash_obj.hexdigest()
         
     def __get_full_text(self):
         main_container = self.__bs.find("div", {"class": "container-fluid bg-content main"})
@@ -111,7 +112,8 @@ class SenatePublication():
         pages_texts = []
         for page_num in range(pdf.numPages):
             LOGGER.debug(f"Getting text from page {page_num}")
-            page_text = pdf.extractText()
+            page = pdf.getPage(page_num)
+            page_text = page.extractText()
 
             # clean text
             page_text = page_text.strip()

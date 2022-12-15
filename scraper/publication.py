@@ -5,6 +5,7 @@ import requests
 from time import sleep
 from bs4 import BeautifulSoup
 from datetime import datetime
+from PyPDF2 import PdfFileReader
 
 from config import BASE_URL
 
@@ -96,7 +97,26 @@ class SenatePublication():
             response = requests.get(self.doc_url)
             with open(self.doc_path, "wb") as f:
                 f.write(response.content)
+
+            # get text from pdf
+            self.__get_pdf_text()
         else:
             self.full_text = panel.get_text(separator="\n", strip=True)
-        
 
+    def __get_pdf_text(self):           
+        pdf = PdfFileReader(open(self.doc_path, "rb"))
+
+        LOGGER.debug(f"pdf has {pdf.numPages} pages")
+
+        pages_texts = []
+        for page_num in range(pdf.numPages):
+            LOGGER.debug(f"Getting text from page {page_num}")
+            page_text = pdf.extractText()
+
+            # clean text
+            page_text = page_text.strip()
+            page_text = re.sub(r"(\n *)+", "\n", page_text)
+
+            pages_texts.append(page_text)
+
+        self.full_text = "\n".join(pages_texts)

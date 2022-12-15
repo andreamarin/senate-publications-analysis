@@ -1,87 +1,105 @@
+import os
 import sys
+import json
 import logging
-import requests
-from bs4 import BeautifulSoup
 from datetime import datetime
-from dateutil.relativedelta import relativedelta
 
 # local imports
 import utils
-from config import BASE_URL, MAIN_URL
+from chrome_driver import ChromeDriver
+from publication import SenatePublication
+from config import *
 
+
+# setup loggers
 LOGGER = logging.getLogger(__name__)
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s %(name)s [%(levelname)s]: %(message)s',
     datefmt='%Y-%m-%dT%H:%M:%S'
 )
+critical_logs = ["urllib3", "selenium"]
+for logger_name in critical_logs:
+    logging.getLogger(logger_name).setLevel(logging.ERROR)
 
 
-def process_data(data: BeautifulSoup, section_type: str, day: str) -> dict:
-    """
-    Process an initiative/proposal data and return formatted dict
+def process_comms(full_comms):
+    for i, comm in enumerate(full_comms):
+        if i % 20 == 0:
+            LOGGER.info(f"Saved {i} {comm.type}")
 
-    Parameters
-    ----------
-    data : BeautifulSoup
-        bs4 object with the comm's html
-    section_type : str
-        indicates if it's a proposal or an initiative
-    day : str
-        day the proposal was published
+        comm.build_full_doc()
 
-    Returns
-    -------
-    dict
-        dictionary with the proposal's complete information
-    """
-    document_href = data.find("a")["href"]
-    LOGGER.info(document_href)
+        date_path = comm.date.strftime("year=%Y/month=%m/day=%d")
+        save_path = f"{os.getcwd()}/{comm.type}/{date_path}"
+
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+
+        json_path = f"{save_path}/{comm.id}.json"
+        with open(json_path, "w") as f:
+            comm_dict = {k: v for k, v in comm.__dict__.items() if not k.startswith("_")}
+            comm_dict["date"] = comm_dict["date"].isoformat()
+            json.dump(comm_dict, f)
 
 
-def process_day(day: str, href: str):
-    url = f"{BASE_URL}/{href}"
+def process_page(page_source, start_date, end_date, comm_type):
+    page_comms = []
+    for data in utils.get_page_comms(page_source):
+        comm = SenatePublication(comm_type, data, DOWNLOAD_PATH)
 
-    response = requests.get(url)
-    day_source = response.text
+        if comm.date >= start_date and comm.date <= end_date:
+            page_comms.append(comm)
 
-    LOGGER.info(f"Processing {day}")
-    relevant_sections = utils.initiatives_proposals_found(day_source)
+    return page_comms
 
-    if len(relevant_sections) == 0:
-        LOGGER.info(f"No initiatives or proposals in {href}")
 
-    for section_type, name in relevant_sections.items():
-        LOGGER.info(f"{section_type}...")
+def load_legislature_data(legis_number: str, comm_type: str, start_date, end_date):
 
-        for data in utils.get_section_data(name, day_source):
-            process_data(section_type, data)
+    # build url
+    LOGGER.info(f"Loading {comm_type} from the {legis_number}th legislature")
+    url = MAIN_URL.format(legis_number=legis_number, type=comm_type)
+
+    driver = ChromeDriver(driver_path=DRIVER_PATH, headless=HEADLESS, download_path=DOWNLOAD_PATH)
+    driver.get(url)
+
+    main_table = driver.get_element(TABLE_XPATH)
+
+    current_page = 1
+    total_pages = utils.get_total_pages(main_table.get_attribute("outerHTML"))
+
+    full_comms = []
+    while current_page <= total_pages:
+        LOGGER.info(f"Processing page {current_page} out of {total_pages}")
+        page_comms = process_page(main_table.get_attribute("outerHTML"), start_date, end_date, comm_type)
+        full_comms.extend(page_comms)
+
+        current_page += 1
+        if current_page <= total_pages:
+            driver.execute_script(LOAD_PAGE_SCRIPT.format(page_num=current_page))
+            driver.wait_elemet_is_old(main_table)
+
+            # get new main table
+            main_table = driver.get_element(TABLE_XPATH)
+
+
+    LOGGER.info(f"Processing {len(full_comms)} {comm_type}")
+    process_comms(full_comms)
+    LOGGER.info(f"Finished saving {comm_type}")
+
+    driver.close()
 
 
 def senate_scraper(start_date: datetime, end_date: datetime):
-    # load main page
-    LOGGER.info("Loading main page")
-    response = requests.get(MAIN_URL)
-    main_source = response.text
+   
+    for legis_number in LEGISLATURE_DATES:
+        if start_date <= LEGISLATURE_DATES[legis_number]["end_date"] and start_date >= LEGISLATURE_DATES[legis_number]["start_date"]:
+            # save data from this legislature
+            legis_start = max(start_date, LEGISLATURE_DATES[legis_number]["start_date"])
+            legis_end = min(end_date, LEGISLATURE_DATES[legis_number]["end_date"])
 
-    start_month = start_date.replace(day=1)
-    end_month = end_date.replace(day = 1)
-
-    current_month = start_month
-    while current_month <= end_month:
-
-        # get proper generator depending on the current month
-        if current_month == start_month:
-            month_urls = utils.get_month_urls(current_month, main_source, start_date=start_date)
-        elif current_month == end_month:
-            month_urls = utils.get_month_urls(current_month, main_source, end_date=end_date)
-        else:
-            month_urls = utils.get_month_urls(current_month, main_source)
-    
-        for day, href in month_urls:
-            process_day(day, href)
-
-        current_month += relativedelta(months=1)
+            load_legislature_data(legis_number, "iniciativas", legis_start, legis_end)
+            load_legislature_data(legis_number, "proposiciones", legis_start, legis_end)
 
 
 if __name__ == "__main__":

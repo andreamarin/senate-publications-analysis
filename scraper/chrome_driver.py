@@ -1,6 +1,8 @@
 import os
 from selenium.webdriver.common.by import By
 from selenium.webdriver import Chrome, ChromeOptions
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 class ChromeDriver(Chrome):
     def __init__(self, driver_path: str = None, headless: bool = True, download_path: str = None):
@@ -26,7 +28,7 @@ class ChromeDriver(Chrome):
         options = ChromeOptions()
 
         if self.headless:
-            options.set_headless(True)
+            options.add_argument("--headless")
 
         # set download path
         if not os.path.exists(self.download_path):
@@ -58,3 +60,15 @@ class ChromeDriver(Chrome):
 
         # open url
         self.get(url)
+
+    def wait_elemet_is_old(self, element, wait_time: int = 10):
+        WebDriverWait(self, wait_time).until(
+            EC.staleness_of(element)
+        )
+
+    def get_element(self, xpath: str, wait_time: int = 10):
+        element = WebDriverWait(self, wait_time).until(
+            EC.presence_of_element_located((By.XPATH, xpath))
+        )
+
+        return element

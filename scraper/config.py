@@ -6,7 +6,7 @@ MAIN_URL = "https://pleno.senado.gob.mx/infosen/infosen64/index.php?c=Legislatur
 BASE_URL = "https://www.senado.gob.mx"
 
 HEADLESS = True
-DOWNLOAD_PATH = os.path.join(os.getcwd(), "data")
+DOWNLOAD_PATH = os.path.join(os.getcwd(), "downloads")
 
 TABLE_XPATH = '//*[@id="viewDataBase"]/div'
 

@@ -31,7 +31,7 @@ def process_comms(full_comms):
         comm.build_full_doc()
 
         date_path = comm.date.strftime("year=%Y/month=%m/day=%d")
-        save_path = f"{os.getcwd()}/{comm.type}/{date_path}"
+        save_path = f"{os.getcwd()}/{date_path}"
 
         if not os.path.exists(save_path):
             os.makedirs(save_path)

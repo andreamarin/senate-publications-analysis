@@ -17,7 +17,7 @@ logging.basicConfig(
     format='%(asctime)s %(name)s [%(levelname)s]: %(message)s',
     datefmt='%Y-%m-%dT%H:%M:%S'
 )
-critical_logs = ["urllib3", "selenium"]
+critical_logs = ["urllib3", "selenium", "PyPDF2"]
 for logger_name in critical_logs:
     logging.getLogger(logger_name).setLevel(logging.ERROR)
 
@@ -36,9 +36,12 @@ def process_comms(full_comms: list):
             LOGGER.info(f"Saved {i} {comm.type}")
 
         # get the full data
-        comm.build_full_doc()
-
-        save_publication(comm)
+        try:
+            comm.build_full_doc()
+        except Exception:
+            LOGGER.error(f"Couldn't process publication {comm.id}", exc_info=True)
+        else:
+            save_publication(comm)
 
 
 def process_page(page_source, start_date, end_date, comm_type):

@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 from PyPDF2 import PdfFileReader
 
-from config import BASE_URL
+from utils.config import BASE_URL
 
 LOGGER = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ class SenatePublication():
         self.parties = list(parties)
 
     def __get_url_data(self):
-        LOGGER.debug(url)
+        LOGGER.debug(self.url)
 
         tries = 1
         success = False
@@ -70,11 +70,16 @@ class SenatePublication():
             try:
                 response = requests.get(self.url)
             except Exception:
-                LOGGER.warning(f"Error loading url {self.url}, retrying ({tries}...)")
+                LOGGER.warning(f"Error loading url {self.url}, retrying ({tries})...")
                 sleep(tries*2)
                 tries += 1                
             else:
-                success = True
+                if response.text == "Connection failed: Too many connections":
+                    LOGGER.warning(f"Too many connections error, retrying ({tries})...")
+                    sleep(tries*2)
+                    tries += 1  
+                else:
+                    success = True
         
         if not success:
             raise Exception("Couldnt load url")

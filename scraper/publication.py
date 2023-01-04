@@ -127,3 +127,6 @@ class SenatePublication():
             pages_texts.append(page_text)
 
         self.full_text = "\n".join(pages_texts)
+
+    def get_json(self):
+        return {k: v for k, v in self.__dict__.items() if not k.startswith("_")}

@@ -1,6 +1,9 @@
 import os
 from datetime import datetime
 
+DB_NAME = "senate-publication"
+TABLE_NAME = "publication"
+
 DRIVER_PATH = "/usr/local/bin/chromedriver"
 MAIN_URL = "https://pleno.senado.gob.mx/infosen/infosen64/index.php?c=Legislatura{legis_number}&a={type}"
 BASE_URL = "https://www.senado.gob.mx"

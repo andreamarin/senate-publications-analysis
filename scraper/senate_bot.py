@@ -7,7 +7,7 @@ from chrome_driver import ChromeDriver
 from publication import SenatePublication
 from utils import methods
 from utils.config import *
-from utils.db import save_publication, publication_exists
+from utils.db import connect_mongo_db, save_publications, publication_exists
 
 
 # setup loggers
@@ -31,6 +31,8 @@ def process_comms(full_comms: list):
     full_comms : list
         list with all the publication objects to process
     """
+    conn = connect_mongo_db(DB_NAME)
+
     for i, comm in enumerate(full_comms):
         if i % 20 == 0:
             LOGGER.info(f"Saved {i} {comm.type}")
@@ -41,7 +43,7 @@ def process_comms(full_comms: list):
         except Exception:
             LOGGER.error(f"Couldn't process publication {comm.id}", exc_info=True)
         else:
-            save_publication(comm)
+            save_publications(comm.get_json(), TABLE_NAME, conn)
 
 
 def process_page(page_source, start_date, end_date, comm_type):
@@ -65,12 +67,15 @@ def process_page(page_source, start_date, end_date, comm_type):
         _description_
     """
     page_comms = []
+
+    conn = connect_mongo_db(DB_NAME)
+
     for data in methods.get_page_comms(page_source):
         comm = SenatePublication(comm_type, data, DOWNLOAD_PATH)
 
         if comm.date >= start_date and comm.date <= end_date:
 
-            if not publication_exists(comm.id, comm.date):
+            if not publication_exists(comm.id, TABLE_NAME, conn):
                 page_comms.append(comm)
             else:
                 LOGGER.info(f"Publication {comm.id} has already been processed")

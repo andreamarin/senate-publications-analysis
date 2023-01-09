@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 from PyPDF2 import PdfFileReader
 
-from utils.config import BASE_URL
+from utils.config import BASE_URL, BASE_URL_V2
 
 LOGGER = logging.getLogger(__name__)
 
@@ -26,23 +26,40 @@ class SenatePublication():
         self.date = datetime.strptime(date_col.text, "%Y/%m/%d")
 
     def __get_id(self):
-        url = self.__table_data[-1].find("a").attrs["href"]
+        original_url = self.__table_data[-1].find("a")
 
-        if "https" not in url:
-            url = re.sub(r"^/", "", url)
-            self.url = f"{BASE_URL}/{url}"
+        if original_url is None:
+            self.__full_data = False
+            url = self.__table_data[0].find("a").attrs["href"]
+
+            if "https" not in url:
+                url = re.sub(r"^/", "", url)
+                self.url = f"{BASE_URL_V2}/{url}"
+            else:
+                self.url = url
         else:
-            self.url = url
+            self.__full_data = True
+            url = original_url.attrs["href"]
+
+            if "https" not in url:
+                url = re.sub(r"^/", "", url)
+                self.url = f"{BASE_URL}/{url}"
+            else:
+                self.url = url
 
         # get id form doc's url
         hash_obj = hashlib.md5(self.url.encode("utf8"))
-        self.id = hash_obj.hexdigest()
+        self._id = hash_obj.hexdigest()
 
     def build_full_doc(self):
         self.__get_summary()
         self.__get_authors_data()
-        self.__get_url_data()
-        self.__get_full_text()
+
+        if self.__full_data:
+            self.__get_url_data()
+            self.__get_full_text()
+        else:
+            self.full_text = self.summary
 
     def __get_summary(self):
         summary = self.__table_data[1].text
@@ -129,4 +146,4 @@ class SenatePublication():
         self.full_text = "\n".join(pages_texts)
 
     def get_json(self):
-        return {k: v for k, v in self.__dict__.items() if not k.startswith("_")}
+        return {k: v for k, v in self.__dict__.items() if not k.startswith("_") or  k == "_id"}

@@ -1,9 +1,11 @@
 
-import os
 import re
+import time
 import logging
 from datetime import datetime
 from bs4 import BeautifulSoup
+
+from .config import TABLE_XPATH
 
 LOGGER = logging.getLogger(__name__)
 
@@ -43,3 +45,24 @@ def get_page_comms(page_source: str):
     bs = BeautifulSoup(page_source, "lxml")
     comms_table = bs.find("table").find("tbody")
     return comms_table.find_all("tr")
+
+
+def wait_new_page(driver, new_page: int):
+    loaded_page = False
+
+    while not loaded_page:
+        main_table = driver.get_element(TABLE_XPATH)
+        page_source = main_table.get_attribute("outerHTML")
+
+        # get current page
+        bs = BeautifulSoup(page_source,'lxml')
+        selected_page = bs.find("ul", {"class": "pagination"}).find("li", {"class": "active"})
+
+        LOGGER.debug(f"Current page: {selected_page}")
+
+        if int(selected_page.text) == new_page:
+            loaded_page = True
+        else:
+            time.sleep(5)
+
+    return main_table

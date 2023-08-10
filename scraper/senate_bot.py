@@ -42,7 +42,7 @@ def process_comms(full_comms: list):
             try:
                 comm.build_full_doc()
             except Exception:
-                LOGGER.error(f"Couldn't process publication {comm._id}", exc_info=True)
+                LOGGER.error(f"Couldn't process publication {comm.url}", exc_info=True)
             else:
                 save_publications(comm.get_json(), TABLE_NAME, conn)
         else:

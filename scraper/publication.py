@@ -102,29 +102,72 @@ class SenatePublication():
             raise Exception("Couldnt load url")
             
         self.__bs = BeautifulSoup(response.text, "lxml")
+
+
+    def __validate_url(self):
+        script_data = self.__bs.find("script")
+
+        if "window.location.href" in script_data.text:
+            # get the real url for the publication
+            new_url = re.search(r"window\.location\.href = \"(.*)\"")
+            new_url = new_url.replace("http", "https")
+
+            # replace for the real url
+            self.url = new_url
+            self.__get_url_data()
+
+    def __download_and_parse_doc(self):
+        doc_name = self.doc_url.split("/")[-1]
+        self.doc_path = f"{self.__download_path}/{doc_name}"
+
+        # download doc
+        response = requests.get(self.doc_url)
+        with open(self.doc_path, "wb") as f:
+            f.write(response.content)
+
+        # get text from pdf
+        self.__get_pdf_text()
         
     def __get_full_text(self):
         main_container = self.__bs.find("div", {"class": "container-fluid bg-content main"})
-        panel = main_container.find("div", {"class": "panel-group"}).find_all("div", {"class": "panel panel-default"}, recursive=False)[2]
 
-        heading = panel.find("div", "panel-heading")
-
-        if heading is not None and "Archivos para descargar" in heading.text: 
-            # there is a doc to download
-            self.doc_url = panel.find("a").attrs["href"]
-            
-            doc_name = self.doc_url.split("/")[-1]
-            self.doc_path = f"{self.__download_path}/{doc_name}"
-
-            # download doc
-            response = requests.get(self.doc_url)
-            with open(self.doc_path, "wb") as f:
-                f.write(response.content)
-
-            # get text from pdf
-            self.__get_pdf_text()
+        if main_container is None:
+            self.__get_full_text_v2()
         else:
-            self.full_text = panel.get_text(separator="\n", strip=True)
+            panel = main_container.find("div", {"class": "panel-group"}).find_all("div", {"class": "panel panel-default"}, recursive=False)[2]
+
+            heading = panel.find("div", "panel-heading")
+
+            if heading is not None and "Archivos para descargar" in heading.text: 
+                # there is a doc to download
+                self.doc_url = panel.find("a").attrs["href"]
+                
+                self.__download_and_parse_doc()
+            else:
+                self.full_text = panel.get_text(separator="\n", strip=True)
+
+    def __get_full_text_v2(self):
+        main_container = self.__bs.find("div", {"class": "container-fluid main"})
+        
+        # get all the headers in the main container
+        headers = [h.text.strip() for h in main_container.find_all("div", {"class": "card-header"})]
+
+        try:
+            header_pos = headers.index("Archivos para descargar:")
+        except ValueError:
+            LOGGER.debug("Download doc not found")
+            doc_panel = None
+        else:
+            doc_panel = main_container.find_all("div", {"class": "card-body"})[header_pos - 1]
+
+        if doc_panel is not None: 
+            # there is a doc to download
+            self.doc_url = doc_panel.find("a").attrs["href"]
+            
+            self.__download_and_parse_doc()
+        else:
+            text_panel = main_container.find_all("div", {"class": "card-body"})[1]
+            self.full_text = text_panel.get_text(separator="\n", strip=True)
 
     def __get_pdf_text(self):           
         pdf = PdfFileReader(open(self.doc_path, "rb"))

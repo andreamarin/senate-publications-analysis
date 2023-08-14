@@ -1,3 +1,4 @@
+import os
 import re
 import hashlib
 import logging
@@ -13,8 +14,9 @@ LOGGER = logging.getLogger(__name__)
 
 
 class SenatePublication():
-    def __init__(self, comm_type: str, table_data, download_path):
+    def __init__(self, comm_type: str, table_data, download_path, page: int):
         self.type = comm_type
+        self._page = page
         self.__table_data = table_data.find_all("td")
         self.__download_path = download_path
 
@@ -57,6 +59,7 @@ class SenatePublication():
 
         if self.__full_data:
             self.__get_url_data()
+            self.__validate_data()
             self.__get_full_text()
         else:
             self.full_text = self.summary
@@ -104,12 +107,12 @@ class SenatePublication():
         self.__bs = BeautifulSoup(response.text, "lxml")
 
 
-    def __validate_url(self):
+    def __validate_data(self):
         script_data = self.__bs.find("script")
 
         if "window.location.href" in script_data.text:
             # get the real url for the publication
-            new_url = re.search(r"window\.location\.href = \"(.*)\"")
+            new_url = re.search(r"window\.location\.href = \"(.*)\"", script_data.text).group(1)
             new_url = new_url.replace("http", "https")
 
             # replace for the real url
@@ -150,7 +153,8 @@ class SenatePublication():
         main_container = self.__bs.find("div", {"class": "container-fluid main"})
         
         # get all the headers in the main container
-        headers = [h.text.strip() for h in main_container.find_all("div", {"class": "card-header"})]
+        header_divs = main_container.find_all("div", {"class": "card-header"})
+        headers = [h.text.strip() for h in header_divs]
 
         try:
             header_pos = headers.index("Archivos para descargar:")
@@ -158,7 +162,8 @@ class SenatePublication():
             LOGGER.debug("Download doc not found")
             doc_panel = None
         else:
-            doc_panel = main_container.find_all("div", {"class": "card-body"})[header_pos - 1]
+            # get the body after the download header
+            doc_panel = header_divs[header_pos].find_next_sibling(attrs={"class": "card-body"})
 
         if doc_panel is not None: 
             # there is a doc to download
@@ -190,3 +195,16 @@ class SenatePublication():
 
     def get_json(self):
         return {k: v for k, v in self.__dict__.items() if not k.startswith("_") or  k == "_id"}
+    
+    def save_table_data(self):
+
+        # build doc name
+        doc_path = self.__download_path.replace("downloads", "errors")
+        doc_id = self.doc_url.split("/")[-1]
+        doc_name = f"{doc_path}/{self.type}_{doc_id}.html"
+
+        if not os.path.exists(doc_path):
+            os.makedirs(doc_path)
+
+        with open(doc_name, "w") as f:
+            f.write(self.__table_data)

@@ -74,6 +74,7 @@ def process_page(page_source, start_date, end_date, comm_type, page_num):
 
     conn = connect_mongo_db(DB_NAME)
 
+    total_comms = 0
     for data in methods.get_page_comms(page_source):
         comm = SenatePublication(comm_type, data, DOWNLOAD_PATH, page_num)
 
@@ -82,7 +83,12 @@ def process_page(page_source, start_date, end_date, comm_type, page_num):
             if not publication_exists(comm._id, TABLE_NAME, conn):
                 page_comms.append(comm)
             else:
-                LOGGER.info(f"Publication {comm._id} has already been processed")
+                LOGGER.debug(f"Publication {comm._id} has already been processed")
+
+            total_comms += 1
+
+    already_processed = total_comms - len(page_comms)
+    LOGGER.info(f"{already_processed} publications out of {total_comms} are already processed")
 
     return page_comms
 

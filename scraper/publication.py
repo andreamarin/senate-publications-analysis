@@ -200,11 +200,11 @@ class SenatePublication():
 
         # build doc name
         doc_path = self.__download_path.replace("downloads", "errors")
-        doc_id = self.doc_url.split("/")[-1]
+        doc_id = self.url.split("/")[-1]
         doc_name = f"{doc_path}/{self.type}_{doc_id}.html"
 
         if not os.path.exists(doc_path):
             os.makedirs(doc_path)
 
-        with open(doc_name, "w") as f:
+        with open(doc_name, "wb") as f:
             f.write(self.__table_data)

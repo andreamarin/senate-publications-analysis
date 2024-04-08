@@ -10,4 +10,6 @@ notebooks/**
 *.json
 **/config/**
 test_db.py
-scraper/errors/
+**/data/**
+scrapers/**/errors/
+news_scraper_v2/**

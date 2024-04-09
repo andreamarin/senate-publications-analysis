@@ -1,7 +1,7 @@
 import os
 import json
 
-from utils.config import IDS_PATH, OUT_PATH
+from utils.config import CHECKPOINT_PATH, IDS_PATH, OUT_PATH
 
 def write_to_json(articles_data: list, file_path: str):
     """
@@ -54,11 +54,30 @@ def get_processed_ids(newspaper: str, section: str) -> set:
     return processed_ids
 
 
-def save_processed_ids(newspaper: str, section: str, processed_ids: set) -> set:
+def save_processed_ids(newspaper: str, section: str, processed_ids: set):
     newspaper_name = newspaper.lower()
     file_name = os.path.join(IDS_PATH.format(newspaper=newspaper_name), f"{section}.json")
     
     with open(file_name, "w") as f:
         json.dump(list(processed_ids), f)
 
-    return processed_ids
+
+def get_section_checkpoint(newspaper: str, section: str) -> str:
+    newspaper_name = newspaper.lower()
+    file_name = os.path.join(CHECKPOINT_PATH.format(newspaper=newspaper_name), f"{section}.txt")
+
+    if os.path.exists(file_name):
+        with open(file_name, "r") as f:
+            checkpoint = f.read()
+    else:
+        checkpoint = None
+
+    return checkpoint
+
+
+def save_section_checkpoint(newspaper: str, section: str, checkpoint: str):
+    newspaper_name = newspaper.lower()
+    file_name = os.path.join(CHECKPOINT_PATH.format(newspaper=newspaper_name), f"{section}.txt")
+    
+    with open(file_name, "w") as f:
+        f.write(checkpoint)

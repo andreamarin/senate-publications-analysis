@@ -6,11 +6,14 @@ import logging
 import requests
 from time import sleep
 from datetime import datetime
+from itertools import groupby
+from operator import itemgetter
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup as bs
+from multiprocessing import cpu_count, Pool
 
 from utils.config import END_YEAR
-from utils.methods import get_processed_ids, save_processed_ids, write_to_json
+from utils.methods import get_processed_ids, get_section_checkpoint, save_processed_ids, save_section_checkpoint, write_to_json
 from utils.proceso_config import BASE_URL, HEADERS, NEWSPAPER_NAME, SEARCH_URL, SECTIONS, SUBSECTIONS
 
 # set locale language to ES
@@ -84,10 +87,30 @@ def get_article_id(article):
     return hashlib.md5(full_url.encode("utf8")).hexdigest()
 
 
-def parse_article(article, section_name: str) -> dict:
+def parse_article(article_str: str, section_name: str, article_id: str) -> tuple[tuple, bool, str]:
     """
     Get all the information about the article
+
+    Parameters
+    ----------
+    article_str : str
+        string of the article's HTML 
+    section_name : str
+        name of the section that contains the article
+    article_id : str
+        id of the article
+
+    Returns
+    -------
+    tuple
+        tuple with the file path for the article and the dict with the article data
+    bool
+        flag that indicates if the article's year is smaller than the END_YEAR
+    str
+        article id
     """
+    article = bs(article_str, "lxml")
+
     path = article.find("a")["href"]
     full_url = urljoin(BASE_URL, path)
 
@@ -99,6 +122,10 @@ def parse_article(article, section_name: str) -> dict:
     if match is not None:
         url_date_str = match.group(1)
         url_date = datetime.strptime(url_date_str, "%Y/%m/%d")
+
+        # stop processing article
+        if url_date.year < END_YEAR:
+            return None, True, None
         
         get_date = False
     else:
@@ -113,6 +140,10 @@ def parse_article(article, section_name: str) -> dict:
         article_text = None
     else:
         error_message = None
+
+        # stop processing article
+        if get_date and article_date.year < END_YEAR:
+            return None, True, None
         
     if url_date is not None:
         final_date = url_date.strftime("%Y-%m-%d")
@@ -128,8 +159,9 @@ def parse_article(article, section_name: str) -> dict:
     
     # build final dictionary
     article_data = {
+        "id": article_id, 
         "newspaper": NEWSPAPER_NAME, 
-        "section": section_name,
+        "section": section_name.replace("_", " "),
         "date": final_date,
         "url": full_url, 
         "title": title, 
@@ -138,7 +170,7 @@ def parse_article(article, section_name: str) -> dict:
         "error_message": error_message
     }
     
-    return article_data, file_path
+    return (file_path, article_data), False, article_id
 
 
 def process_page_articles(articles: list, section_name: str, processed_ids: set) -> bool:
@@ -161,41 +193,38 @@ def process_page_articles(articles: list, section_name: str, processed_ids: set)
     """
     end = False
 
-    page_data = {}
+    articles_params = []
     for article in articles:
         article_id = get_article_id(article)
 
         if article_id in processed_ids:
             LOGGER.debug(f"Already processed article {article_id}")
-            continue
         else:
-            processed_ids.add(article_id)
+            articles_params.append((str(article), section_name, article_id))
 
-        article_data, file_path = parse_article(article, section_name)
+    # process articles in parallel
+    with Pool(cpu_count()) as p:
+        results = p.starmap(parse_article, articles_params)
 
-        # check if the article is still in a year we want
-        article_year = int(file_path.split("/")[0])
-        if article_year < END_YEAR:
-            end = True
-            continue
+    # set flag as True if any of the articles has the exclude flag as True
+    end = any(map(itemgetter(1), results))
 
-        # save id
-        article_data["id"] = article_id
+    # keep only articles where the exclude flag is False
+    articles_info, _, article_ids = zip(*filter(lambda x: not x[1], results))
 
-        # save into final dict
-        if file_path in page_data:
-            page_data[file_path].append(article_data)
-        else:
-            page_data[file_path] = [article_data]
-    
     # write results
-    for file_path, articles_data in page_data.items():
+    for file_path, group in groupby(articles_info, itemgetter(0)):
+        articles_data = map(itemgetter(1), group)
         write_to_json(articles_data, file_path)
+
+    # update processed ids set
+    processed_ids = processed_ids.union(set(article_ids))
 
     # update file with processed ids
     save_processed_ids(NEWSPAPER_NAME, section_name, processed_ids)
 
     return end
+
 
 def get_section_data(section_name: str):
     """
@@ -207,10 +236,15 @@ def get_section_data(section_name: str):
     processed_ids = get_processed_ids(NEWSPAPER_NAME, section_name)
     LOGGER.debug(f"{len(processed_ids)} processed ids")
 
-    if section_name == "nacional" and len(processed_ids) == 0:
-        raise Exception("Nacional IDS not found!!!")
-    
-    page_num = 1
+    # get starting point
+    last_page = get_section_checkpoint(NEWSPAPER_NAME, section_name)
+    if last_page is None:
+        page_num = 1
+    else:
+        page_num = int(last_page) + 1
+
+    LOGGER.info(f"Starting from page {page_num}")
+
     while True:
 
         if page_num % 100 == 0:
@@ -229,6 +263,8 @@ def get_section_data(section_name: str):
         articles = soup.find_all("article")
 
         final_page = process_page_articles(articles, section_name, processed_ids)
+
+        save_section_checkpoint(NEWSPAPER_NAME, section_name, str(page_num))
 
         if final_page:
             LOGGER.info(f"Finished at page {page_num}")

@@ -22,12 +22,15 @@ def write_to_json(articles_data: list, file_path: str):
     if not os.path.exists(year_dir):
         os.mkdir(year_dir)
 
-    if os.path.isfile(file_name):
+    if os.path.isfile(file_name) and os.path.getsize(file_name) > 0:
         # file exists
         with open(file_name, 'a+') as outfile:
-            # go to the end of the file and remove the end ]
+            # go to the end of the file
             outfile.seek(0, os.SEEK_END)
-            outfile.seek(outfile.tell() - 1, os.SEEK_SET)
+            end_position = outfile.tell()
+
+            # remove the ending "]"
+            outfile.seek(end_position - 1, os.SEEK_SET)
             outfile.truncate()
 
             for article in articles_data:

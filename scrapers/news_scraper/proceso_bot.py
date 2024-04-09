@@ -214,7 +214,7 @@ def process_page_articles(articles: list, section_name: str, processed_ids: set)
 
     # write results
     for file_path, group in groupby(articles_info, itemgetter(0)):
-        articles_data = map(itemgetter(1), group)
+        articles_data = list(map(itemgetter(1), group))
         write_to_json(articles_data, file_path)
 
     # update processed ids set

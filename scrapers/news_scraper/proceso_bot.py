@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup as bs
 from multiprocessing import cpu_count, Pool
 
 from utils.config import END_YEAR
-from utils.methods import get_processed_ids, get_section_checkpoint, save_processed_ids, save_section_checkpoint, write_to_json
+from utils.methods import get_processed_ids, get_section_checkpoint, get_url, save_processed_ids, save_section_checkpoint, write_to_json_safe
 from utils.proceso_config import BASE_URL, HEADERS, NEWSPAPER_NAME, SEARCH_URL, SECTIONS, SUBSECTIONS
 
 # set locale language to ES
@@ -26,7 +26,7 @@ logging.basicConfig(
     format='%(asctime)s %(name)s [%(levelname)s]: %(message)s',
     datefmt='%Y-%m-%dT%H:%M:%S'
 )
-critical_logs = ["urllib3", "charset_normalizer"]
+critical_logs = ["urllib3", "charset_normalizer", "filelock"]
 for logger_name in critical_logs:
     logging.getLogger(logger_name).setLevel(logging.ERROR)
 
@@ -51,7 +51,7 @@ def get_text(url: str, get_date: bool=False) -> tuple[str, datetime]:
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:124.0) Gecko/20100101 Firefox/124.0",
     }
-    response = requests.get(url, headers=headers)
+    response = get_url(url, headers=headers)
     soup = bs(response.content, "lxml")
     
     # div with the article's data
@@ -202,6 +202,10 @@ def process_page_articles(articles: list, section_name: str, processed_ids: set)
         else:
             articles_params.append((str(article), section_name, article_id))
 
+    if len(articles_params) == 0:
+        LOGGER.info("All articles have been processed")
+        return False
+
     # process articles in parallel
     with Pool(cpu_count()) as p:
         results = p.starmap(parse_article, articles_params)
@@ -210,18 +214,24 @@ def process_page_articles(articles: list, section_name: str, processed_ids: set)
     end = any(map(itemgetter(1), results))
 
     # keep only articles where the exclude flag is False
-    articles_info, _, article_ids = zip(*filter(lambda x: not x[1], results))
+    final_results = [[r[0], r[2]] for r in results if not r[1]]
 
-    # write results
-    for file_path, group in groupby(articles_info, itemgetter(0)):
-        articles_data = list(map(itemgetter(1), group))
-        write_to_json(articles_data, file_path)
+    if len(final_results) == 0:
+        # all the articles have the excluded flag as True
+        LOGGER.info(f"No articles with year >= {END_YEAR}")
+    else:
+        articles_info, article_ids = zip(*final_results)
 
-    # update processed ids set
-    processed_ids = processed_ids.union(set(article_ids))
+        # write results
+        for file_path, group in groupby(articles_info, itemgetter(0)):
+            articles_data = list(map(itemgetter(1), group))
+            write_to_json_safe(articles_data, file_path)
 
-    # update file with processed ids
-    save_processed_ids(NEWSPAPER_NAME, section_name, processed_ids)
+        # update processed ids set
+        processed_ids = processed_ids.union(set(article_ids))
+
+        # update file with processed ids
+        save_processed_ids(NEWSPAPER_NAME, section_name, processed_ids)
 
     return end
 
@@ -241,7 +251,12 @@ def get_section_data(section_name: str):
     if last_page is None:
         page_num = 1
     else:
-        page_num = int(last_page) + 1
+        last_page = int(last_page)
+        if last_page < 0:
+            LOGGER.info("Section already finished")
+            return
+        else:
+            page_num = last_page + 1
 
     LOGGER.info(f"Starting from page {page_num}")
 
@@ -254,8 +269,9 @@ def get_section_data(section_name: str):
         payload = f"id_seccion={section_id}&id_subseccion={subsection_id}&page={page_num}"
         response = requests.post(SEARCH_URL, data=payload, headers=HEADERS)
        
-        if response.status_code != 200:
-            LOGGER.info(f"Finished at page {page_num}")
+        if response.text == "":
+            LOGGER.info(f"Finished at page {page_num} because of empty response")
+            save_section_checkpoint(NEWSPAPER_NAME, section_name, str(-page_num))
             break
         
         # get all articles
@@ -264,17 +280,20 @@ def get_section_data(section_name: str):
 
         final_page = process_page_articles(articles, section_name, processed_ids)
 
-        save_section_checkpoint(NEWSPAPER_NAME, section_name, str(page_num))
-
         if final_page:
             LOGGER.info(f"Finished at page {page_num}")
+            # save as negative number
+            save_section_checkpoint(NEWSPAPER_NAME, section_name, str(-page_num))
             break
+        else:
+            save_section_checkpoint(NEWSPAPER_NAME, section_name, str(page_num))
         
         # go to next page
         page_num += 1
 
         # sleep to avoid getting blocked
-        sleep(random.randint(1,3))
+        if page_num % 20 == 0:
+            sleep(random.randint(1,3))
 
 
 def scrape_proceso():

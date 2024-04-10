@@ -1,7 +1,29 @@
 import os
 import json
+import random
+import requests
+import logging
+from time import sleep
+from filelock import FileLock
 
-from utils.config import CHECKPOINT_PATH, IDS_PATH, OUT_PATH
+from utils.config import CHECKPOINT_PATH, IDS_PATH, LOCKS_PATH, OUT_PATH
+
+LOGGER = logging.getLogger(__name__)
+
+
+def write_to_json_safe(articles_data: list, file_path: str):
+    lock_path = file_path.replace(".json", ".lock")
+    lock_file = os.path.join(LOCKS_PATH, lock_path)
+
+    # create dir if not exists
+    lock_dir = os.path.dirname(lock_file)
+    if not os.path.exists(lock_dir):
+        os.makedirs(lock_dir)
+
+    # acquire lock
+    with FileLock(lock_file, timeout=-1):
+        write_to_json(articles_data, file_path)
+
 
 def write_to_json(articles_data: list, file_path: str):
     """
@@ -20,7 +42,7 @@ def write_to_json(articles_data: list, file_path: str):
     # create dir if not exists
     year_dir = os.path.dirname(file_name)
     if not os.path.exists(year_dir):
-        os.mkdir(year_dir)
+        os.makedirs(year_dir)
 
     if os.path.isfile(file_name) and os.path.getsize(file_name) > 0:
         # file exists
@@ -60,6 +82,11 @@ def get_processed_ids(newspaper: str, section: str) -> set:
 def save_processed_ids(newspaper: str, section: str, processed_ids: set):
     newspaper_name = newspaper.lower()
     file_name = os.path.join(IDS_PATH.format(newspaper=newspaper_name), f"{section}.json")
+
+    # create dir if not exists
+    ids_dir = os.path.dirname(file_name)
+    if not os.path.exists(ids_dir):
+        os.makedirs(ids_dir)
     
     with open(file_name, "w") as f:
         json.dump(list(processed_ids), f)
@@ -81,6 +108,35 @@ def get_section_checkpoint(newspaper: str, section: str) -> str:
 def save_section_checkpoint(newspaper: str, section: str, checkpoint: str):
     newspaper_name = newspaper.lower()
     file_name = os.path.join(CHECKPOINT_PATH.format(newspaper=newspaper_name), f"{section}.txt")
+
+    # create dir if not exists
+    checks_dir = os.path.dirname(file_name)
+    if not os.path.exists(checks_dir):
+        os.makedirs(checks_dir)
     
     with open(file_name, "w") as f:
         f.write(checkpoint)
+
+
+def get_url(url: str, headers: dict = None, max_retries: int = 3):
+    num_try = 0
+    response = None
+    while response is None:
+        try:
+            if headers is not None:
+                response = requests.get(url, headers=headers)
+            else:
+                response = requests.get(url)
+        except Exception as ex:
+
+            if num_try >= max_retries:
+                # max retries exceeded raise error
+                raise Exception(ex)
+
+            num_try += 1
+            sleep_seconds = random.randint(1, 5)
+            
+            LOGGER.warning(f"Failed getting url {url}, retrying in {sleep_seconds}s...")
+            sleep(sleep_seconds)
+
+    return response

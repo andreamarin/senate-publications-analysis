@@ -4,7 +4,7 @@ BATCH_SIZE = 20
 
 # sections data
 SECTIONS = {
-    "politica": "Politica",
+    "politica": "Poltica",
     "salud": "Salud",
     "seguridad": "Seguridad",
     "genero_y_diversidad": "GneroYDiversidad",
@@ -26,7 +26,19 @@ EXTRA_QUERY = {
             }
         }
     }
+    """,
+    "analisis": """
+    blogSlug
+    blogAuthor
     """
+}
+
+OP_SECTION_NAME = {
+    "politica": "Politica"
+}
+
+KEYS_NAMES = {
+    "analisis": "notasDePlumaje"
 }
 
 SUBCATEGORIES = {

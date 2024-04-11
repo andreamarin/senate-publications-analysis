@@ -87,6 +87,15 @@ def build_url(row: pd.Series) -> str:
         
         article_slug = f"{row.section_slug}/{category_slug}/{row.slug}"
 
+    elif row.section == "analisis":
+
+        if row.blogSlug == "blog-invitado":
+            article_slug = f"{row.section_slug}/invitades/{row.slug}"
+        elif row.blogAuthor is None:
+            article_slug = f"{row.section_slug}/autores/{row.blogSlug}/{row.slug}"
+        else:
+            article_slug = f"{row.section_slug}/organizaciones/{row.blogSlug}/{row.slug}"
+
     else:
         article_slug = f"{row.section_slug}/{row.slug}"
         
@@ -212,8 +221,16 @@ def get_section_data(section_name: str):
     Get all the articles from the given section
     """
     section_id = SECTIONS[section_name]
-    op_name = OPERATION_NAME.format(section=section_id)
-    results_key = NEWS_KEY.format(section=section_id)
+
+    if section_name in KEYS_NAMES:
+        results_key = KEYS_NAMES[section_name]
+    else:
+        results_key = NEWS_KEY.format(section=section_id)
+
+    if section_name in OP_SECTION_NAME:
+        op_name = OPERATION_NAME.format(section=OP_SECTION_NAME[section_name])
+    else:
+        op_name = OPERATION_NAME.format(section=section_id)
 
     # get extra query for the section if exists
     extra_query = EXTRA_QUERY.get(section_name, "")
@@ -275,6 +292,13 @@ def get_section_data(section_name: str):
         if np.isinf(total_results):
             # update total results with real number
             total_results = data["pageInfo"]["offsetPagination"]["total"]
+            LOGGER.info(f"{total_results} total results for section")
+
+        if total_results == 0:
+            LOGGER.info("No more results")
+            # the last offset with results was the previous one
+            offset = offset - BATCH_SIZE
+            break
 
         # process and save articles
         articles = map(itemgetter("node"), data["edges"])

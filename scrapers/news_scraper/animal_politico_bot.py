@@ -208,12 +208,12 @@ def process_batch_articles(articles: list, section_name: str, processed_ids: set
 
     if articles_df.shape[0] > 0:
         # update processed ids set
-        processed_ids = processed_ids.union(set(articles_df.id))
+        updated_processed_ids = processed_ids.union(set(articles_df.id))
 
         # update file with processed ids
-        save_processed_ids(NEWSPAPER_NAME, section_name, processed_ids)
+        save_processed_ids(NEWSPAPER_NAME, section_name, updated_processed_ids)
 
-    return end
+    return end, updated_processed_ids
 
 
 def get_section_data(section_name: str):
@@ -302,7 +302,7 @@ def get_section_data(section_name: str):
 
         # process and save articles
         articles = map(itemgetter("node"), data["edges"])
-        final_page = process_batch_articles(articles, section_name, processed_ids)
+        final_page, updated_processed_ids = process_batch_articles(articles, section_name, processed_ids)
 
         if final_page:
             LOGGER.info(f"Finished at batch {batch_num}")
@@ -312,6 +312,9 @@ def get_section_data(section_name: str):
         
         # go to next batch
         offset += BATCH_SIZE
+
+        # update ids
+        processed_ids = updated_processed_ids
 
         # sleep to avoid getting blocked
         if batch_num % 20 == 0:

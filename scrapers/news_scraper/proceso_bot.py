@@ -51,21 +51,17 @@ def get_text(url: str, get_date: bool=False) -> tuple[str, datetime]:
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:124.0) Gecko/20100101 Firefox/124.0",
     }
+    news_text = None
+
+    if "conferencia-mananera-de-amlo" in url:
+        news_text = "---video-mananera-amlo---"
+    
+    if "fotogaleria-" in url:
+        news_text = "---fotogaleria---"
+
     response = get_url(url, headers=headers)
     soup = bs(response.content, "lxml")
-    
-    # div with the article's data
-    main_div = soup.find("article", {"class": "main-article"})
-    
-    # body
-    article = main_div.find("div", {"class": "cuerpo-nota"})
-    news_text = "\n".join(c.text for c in article.children if c.name == "p")
-    
-    # clean text
-    news_text = news_text.replace(u'\xa0', u' ')
-    news_text = re.sub("(\n *)+", "\n", news_text)
-    news_text = re.sub("\n$", "", news_text)
-    
+
     if get_date:
         date_div = soup.find("div", {"class":"fecha-y-seccion"})
         full_date_str = date_div.find("div", {"class":"fecha"}).text
@@ -75,6 +71,58 @@ def get_text(url: str, get_date: bool=False) -> tuple[str, datetime]:
         article_date = datetime.strptime(date_str, "%d de %B de %Y")
     else:
         article_date = None
+
+    if news_text is not None:
+        return news_text, article_date
+
+    tags = [tag.text for tag in soup.find_all("a", {"class": "tag label"})]
+    if "Cartón" in tags:
+        # article is a comic, so there's no text
+        return "---carton---", article_date
+    
+    caption = soup.find("figcaption")
+    if caption is not None and ("caricatura" in caption.text or "cartón" in caption.text):
+        # article is a comic, so there's no text
+        return "---carton---", article_date
+    
+    # div with the article's data
+    main_div = soup.find("article", {"class": "main-article"})
+    
+    # body
+    article = main_div.find("div", {"class": "cuerpo-nota"})
+    news_text = "\n".join(
+        c.text
+        for c in article.children
+        if c.name is None or c.name in ["p", "blockquote", "div", "span", "em", "code"]
+    )
+
+    # remove unwanted text
+    unwanted_regex = [
+        r"\[video .*\]\[\/video\]",
+        r"\n.*? by .*?on Scribd",
+        r"\[\/caption\]\[caption .*?\]",
+        r"\[\/caption\]",
+        r"\[caption .*?\]",
+        r"https:\/\/(twitter|x)\.com\/.*?[ \n]",
+        r"Nota relacionada: *",
+        r"https:\/\/www\.proceso\.com\.mx\/.*?[ \n]",
+        r"\[playlist .*?\]",
+        r"https:\/\/www\.youtube\.com\/.*?[ \n]",
+        r"https:\/\/www\.facebook\.com\/.*?[ \n]",
+        r"https:\/\/www\.(.*?)\.com\/.*?[ \n]",
+        r"https:\/\/www\.(.*?)\.com\.mx\/.*?[ \n]",
+    ]
+    for regex in unwanted_regex:
+        news_text = re.sub(regex, "", news_text)
+    
+    # clean text
+    news_text = news_text.replace(u'\xa0', u' ')
+    news_text = re.sub("(\n *)+", "\n", news_text)
+    news_text = re.sub("\n$", "", news_text)
+    news_text = re.sub("^\n", "", news_text)
+
+    if news_text == "" and "video" in url:
+        news_text = "---video---"
 
     return news_text, article_date
 

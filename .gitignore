@@ -8,6 +8,8 @@
 notebooks/**
 *.pdf
 *.json
+*.zip
+*.lock
 **/config/**
 test_db.py
 **/data/**

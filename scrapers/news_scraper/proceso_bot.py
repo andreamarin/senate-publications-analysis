@@ -22,7 +22,7 @@ locale.setlocale(locale.LC_TIME, "es_ES")
 # setup loggers
 LOGGER = logging.getLogger(__name__)
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s %(name)s [%(levelname)s]: %(message)s',
     datefmt='%Y-%m-%dT%H:%M:%S'
 )
@@ -59,7 +59,7 @@ def get_text(url: str, get_date: bool=False) -> tuple[str, datetime]:
     if "fotogaleria-" in url:
         news_text = "---fotogaleria---"
 
-    response = get_url(url, headers=headers)
+    response = get_url(url, method="GET", headers=headers)
     soup = bs(response.content, "lxml")
 
     if get_date:
@@ -252,7 +252,7 @@ def process_page_articles(articles: list, section_name: str, processed_ids: set)
 
     if len(articles_params) == 0:
         LOGGER.info("All articles have been processed")
-        return False
+        return False, processed_ids
 
     # process articles in parallel
     with Pool(cpu_count()) as p:
@@ -276,12 +276,12 @@ def process_page_articles(articles: list, section_name: str, processed_ids: set)
             write_to_json_safe(articles_data, file_path)
 
         # update processed ids set
-        processed_ids = processed_ids.union(set(article_ids))
+        updated_processed_ids = processed_ids.union(set(article_ids))
 
         # update file with processed ids
-        save_processed_ids(NEWSPAPER_NAME, section_name, processed_ids)
+        save_processed_ids(NEWSPAPER_NAME, section_name, updated_processed_ids)
 
-    return end
+    return end, updated_processed_ids
 
 
 def get_section_data(section_name: str):
@@ -315,7 +315,7 @@ def get_section_data(section_name: str):
 
         # get data
         payload = f"id_seccion={section_id}&id_subseccion={subsection_id}&page={page_num}"
-        response = requests.post(SEARCH_URL, data=payload, headers=HEADERS)
+        response = get_url(SEARCH_URL, method="POST", data=payload, headers=HEADERS)
        
         if response.text == "":
             LOGGER.info(f"Finished at page {page_num} because of empty response")
@@ -326,7 +326,7 @@ def get_section_data(section_name: str):
         soup = bs(response.content, "lxml")
         articles = soup.find_all("article")
 
-        final_page = process_page_articles(articles, section_name, processed_ids)
+        final_page, updated_processed_ids = process_page_articles(articles, section_name, processed_ids)
 
         if final_page:
             LOGGER.info(f"Finished at page {page_num}")
@@ -342,6 +342,8 @@ def get_section_data(section_name: str):
         # sleep to avoid getting blocked
         if page_num % 20 == 0:
             sleep(random.randint(1,3))
+
+        processed_ids = updated_processed_ids
 
 
 def scrape_proceso():

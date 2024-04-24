@@ -3,7 +3,6 @@ import json
 import locale
 import random
 import logging
-import requests
 import numpy as np
 import pandas as pd
 from time import sleep

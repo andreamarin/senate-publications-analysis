@@ -3,7 +3,6 @@ import locale
 import random
 import hashlib
 import logging
-import requests
 from time import sleep
 from datetime import datetime
 from itertools import groupby

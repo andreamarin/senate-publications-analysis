@@ -1,5 +1,4 @@
 import re
-import locale
 import random
 import hashlib
 import logging
@@ -12,11 +11,8 @@ from bs4 import BeautifulSoup as bs
 from multiprocessing import cpu_count, Pool
 
 from utils.config import END_YEAR
+from newspaper_config.proceso import *
 from utils.methods import get_processed_ids, get_section_checkpoint, get_url, save_processed_ids, save_section_checkpoint, write_to_json_safe
-from utils.proceso_config import BASE_URL, HEADERS, NEWSPAPER_NAME, SEARCH_URL, SECTIONS, SUBSECTIONS
-
-# set locale language to ES
-locale.setlocale(locale.LC_TIME, "es_ES")
 
 # setup loggers
 LOGGER = logging.getLogger(__name__)

@@ -1,6 +1,5 @@
 import re
 import json
-import locale
 import random
 import logging
 import numpy as np
@@ -12,11 +11,9 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup as bs
 
 from utils.config import END_YEAR
+from newspaper_config.animal_politico import *
 from utils.methods import get_processed_ids, get_section_checkpoint, get_url, save_processed_ids, save_section_checkpoint, write_to_json_safe
-from utils.animal_politico_config import *
 
-# set locale language to ES
-locale.setlocale(locale.LC_TIME, "es_ES")
 
 # setup loggers
 LOGGER = logging.getLogger(__name__)

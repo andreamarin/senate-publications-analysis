@@ -45,7 +45,7 @@ def get_url_text(url: str) -> str:
     """
 
     try:
-        response = get_url(url)
+        response = get_url(url, method="GET")
     except Exception:
         LOGGER.warning(f"Couldn't get url {url}", exc_info=True)
         return None
@@ -278,7 +278,7 @@ def get_section_data(section_name: str):
             "query": section_query
         }
         payload = json.dumps(params)
-        response = requests.post(SEARCH_URL, data=payload, headers=HEADERS)
+        response = get_url(SEARCH_URL, method="POST", data=payload, headers=HEADERS)
        
         # raise exception if status != 200
         response.raise_for_status()

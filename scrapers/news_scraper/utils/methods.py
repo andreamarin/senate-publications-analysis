@@ -118,16 +118,16 @@ def save_section_checkpoint(newspaper: str, section: str, checkpoint: str):
         f.write(checkpoint)
 
 
-def get_url(url: str, method: str, headers: dict = None, data: str = None, max_retries: int = 3):
+def get_url(url: str, method: str, headers: dict = None, data: str = None, params: dict = {}, max_retries: int = 3):
     num_try = 0
     response = None
     while response is None:
         try:
             if method == "GET":
                 if headers is not None:
-                    response = requests.get(url, headers=headers)
+                    response = requests.get(url, params=params, headers=headers)
                 else:
-                    response = requests.get(url)
+                    response = requests.get(url, params=params)
             
             elif method == "POST":
                 if headers is not None:

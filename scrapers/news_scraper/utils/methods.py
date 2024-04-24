@@ -136,15 +136,30 @@ def get_url(url: str, method: str, headers: dict = None, data: str = None, param
                     response = requests.post(url, data=data)
 
         except Exception as ex:
-
             if num_try >= max_retries:
                 # max retries exceeded raise error
                 raise Exception(ex)
-
-            num_try += 1
-            sleep_seconds = random.randint(1, 5)
             
-            LOGGER.warning(f"Failed getting url {url}, retrying in {sleep_seconds}s...")
-            sleep(sleep_seconds)
+            retry = True
+        
+        else:
+            if response.status_code >= 500:
+                # internal server error, retry request
+                if num_try >= max_retries:
+                    # max retries exceeded raise error
+                    response.raise_for_status()
+                
+                retry = True
+                response = None
+            else:
+                retry =False
+        
+        finally:
+            if retry:
+                num_try += 1
+                sleep_seconds = random.randint(1, 5)
+                
+                LOGGER.warning(f"Failed getting url {url}, retrying in {sleep_seconds}s...")
+                sleep(sleep_seconds)
 
     return response

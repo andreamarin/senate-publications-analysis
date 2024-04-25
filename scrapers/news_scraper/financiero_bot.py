@@ -220,7 +220,7 @@ def get_section_data(section_name: str):
             LOGGER.info(f"batch {batch_num}")
 
         # get data
-        section_url = section_name.replace("-", "_")
+        section_url = section_name.replace("_", "-")
         query = {
             "excludeSections":"",
             "feature":"results-list",

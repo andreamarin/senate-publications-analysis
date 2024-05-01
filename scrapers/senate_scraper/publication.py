@@ -14,9 +14,10 @@ LOGGER = logging.getLogger(__name__)
 
 
 class SenatePublication():
-    def __init__(self, comm_type: str, table_data, download_path, page: int):
+    def __init__(self, comm_type: str, table_data, download_path: str, page: int):
         self.type = comm_type
         self._page = page
+        self.__raw_table_data = str(table_data)
         self.__table_data = table_data.find_all("td")
         self.__download_path = download_path
 
@@ -223,5 +224,5 @@ class SenatePublication():
         if not os.path.exists(doc_path):
             os.makedirs(doc_path)
 
-        with open(doc_name, "wb") as f:
-            f.write(self.__table_data)
+        with open(doc_name, "w") as f:
+            f.write(self.__raw_table_data)

@@ -136,7 +136,7 @@ def get_section_data(section_url: str, date: datetime, section_name: str, proces
     articles_df["id"] = articles_df.url.apply(hash_url)
     articles_df["newspaper"] = NEWSPAPER_NAME.replace("_", " ")
     articles_df["section"] = section_name
-    articles_df["section"] = date.strftime("%Y-%m-%d")
+    articles_df["date"] = date.strftime("%Y-%m-%d")
 
     # remove articles that were already saved
     articles_df = articles_df.loc[~articles_df.id.isin(processed_ids)]
@@ -154,19 +154,19 @@ def get_section_data(section_url: str, date: datetime, section_name: str, proces
     updated_processed_ids = processed_ids.union(set(articles_df.id))
 
     # update file with processed ids
-    ids_file = date.strftime("%Y_%m_%d")
-    save_processed_ids(NEWSPAPER_NAME, ids_file, updated_processed_ids)
+    ids_file_path = date.strftime("%Y/%m/%d")
+    save_processed_ids(NEWSPAPER_NAME, ids_file_path, updated_processed_ids)
 
     return updated_processed_ids
 
 
 def get_date_articles(date: datetime):
-    date_str = date.strftime("%Y_%m_%d")
+    date_data_file = date.strftime("%Y/%m/%d")
 
-    processed_ids = get_processed_ids(NEWSPAPER_NAME, date_str)
+    processed_ids = get_processed_ids(NEWSPAPER_NAME, date_data_file)
     LOGGER.debug(f"Already processed {len(processed_ids)} articles")
 
-    processed_sections_str = get_section_checkpoint(NEWSPAPER_NAME, date_str)
+    processed_sections_str = get_section_checkpoint(NEWSPAPER_NAME, date_data_file)
     if processed_sections_str is None:
         processed_sections_str = "---"
 
@@ -178,14 +178,13 @@ def get_date_articles(date: datetime):
     LOGGER.debug(date_url)
 
     response = get_url(date_url, method="GET")
-    soup = bs(response.content, "lxml")
 
-    not_found = soup.find("div", {"class": "404"})
-    forbidden = soup.find("h1", text="403 Forbidden")
-    if not_found is not None or forbidden is not None:
+    if response.status_code == 404 or response.status_code == 403:
         LOGGER.info("No data for current date")
-        save_section_checkpoint(NEWSPAPER_NAME, date_str, FINISHED_STR)
+        save_section_checkpoint(NEWSPAPER_NAME, date_data_file, FINISHED_STR)
         return
+    
+    soup = bs(response.content, "lxml")
 
     sections = soup.find("div", {"class": "main-sections"}).find_all("td")
     for section in sections:
@@ -214,11 +213,11 @@ def get_date_articles(date: datetime):
 
             # update string with processed sections
             processed_sections_str += f"{section_name}---"
-            save_section_checkpoint(NEWSPAPER_NAME, date_str, processed_sections_str)
+            save_section_checkpoint(NEWSPAPER_NAME, date_data_file, processed_sections_str)
 
     # add string that indicates that the date is finished
     processed_sections_str += FINISHED_STR
-    save_section_checkpoint(NEWSPAPER_NAME, date_str, processed_sections_str)
+    save_section_checkpoint(NEWSPAPER_NAME, date_data_file, processed_sections_str)
 
 
 def scrape_la_jornada():

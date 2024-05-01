@@ -14,4 +14,5 @@ notebooks/**
 test_db.py
 **/data/**
 scrapers/**/errors/
+scrapers/**/downloads
 news_scraper_v2/**

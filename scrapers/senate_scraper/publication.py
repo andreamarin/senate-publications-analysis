@@ -69,17 +69,24 @@ class SenatePublication():
         self.summary = summary.replace("\n", " ")
 
     def __get_authors_data(self):
-        authors = self.__table_data[3].get_text(separator="\n", strip=True)
-        
-       # get all the authors and parties involves 
-        self.authors = []
-        parties = set()
-        for author in authors.split("\n"):
-            author_info = re.match(r"(.+?) \((.*)\)", author)
-            self.authors.append(author_info.group(1))
-            parties.add(author_info.group(2))
+        """
+        Get the senators and political parties involved
+        """
+        authors_text = self.__table_data[3].get_text(separator="\n", strip=True)
 
-        self.parties = list(parties)
+        if authors_text == "":
+            LOGGER.warning("No authors data found")
+            self.authors = []
+            self.parties = []
+        else:
+            self.authors = []
+            parties = set()
+            for author in authors_text.split("\n"):
+                author_info = re.match(r"(.+?) \((.*)\)", author)
+                self.authors.append(author_info.group(1))
+                parties.add(author_info.group(2))
+
+            self.parties = list(parties)
 
     def __get_url_data(self):
         LOGGER.debug(self.url)
@@ -106,8 +113,11 @@ class SenatePublication():
             
         self.__bs = BeautifulSoup(response.text, "lxml")
 
-
     def __validate_data(self):
+        """
+        Check if the loaded page has a redirect url, if so use that as the 
+        publication's url and load it
+        """
         script_data = self.__bs.find("script")
 
         if "window.location.href" in script_data.text:
@@ -120,16 +130,23 @@ class SenatePublication():
             self.__get_url_data()
 
     def __download_and_parse_doc(self):
+        """
+        Download the doc and get the full text from the pdf
+        """
         doc_name = self.doc_url.split("/")[-1]
         self.doc_path = f"{self.__download_path}/{doc_name}"
 
         # download doc
         response = requests.get(self.doc_url)
-        with open(self.doc_path, "wb") as f:
-            f.write(response.content)
+        if response.status_code != 200:
+            LOGGER.warning(f"Couldn't download file, status {response.status_code}")
+            self.full_text = self.summary
+        else:
+            with open(self.doc_path, "wb") as f:
+                f.write(response.content)
 
-        # get text from pdf
-        self.__get_pdf_text()
+            # get text from pdf
+            self.__get_pdf_text()
         
     def __get_full_text(self):
         main_container = self.__bs.find("div", {"class": "container-fluid bg-content main"})

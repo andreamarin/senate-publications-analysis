@@ -22,7 +22,7 @@ for logger_name in critical_logs:
     logging.getLogger(logger_name).setLevel(logging.ERROR)
 
 
-def process_comms(full_comms: list):
+def process_comms(full_comms: list, conn):
     """
     Finish processing all the publications
 
@@ -30,8 +30,9 @@ def process_comms(full_comms: list):
     ----------
     full_comms : list
         list with all the publication objects to process
+    conn :
+        client to the Mongo DB
     """
-    conn = connect_mongo_db(DB_NAME)
 
     for i, comm in enumerate(full_comms):
         if i % 20 == 0:
@@ -47,34 +48,34 @@ def process_comms(full_comms: list):
             else:
                 save_publications(comm.get_json(), TABLE_NAME, conn)
         else:
-            LOGGER.info(f"Publication {comm._id} has already been processed")
+            LOGGER.debug(f"Publication {comm._id} has already been processed")
 
 
-def process_page(page_source, start_date, end_date, comm_type, page_num):
+def process_page(page_source: str, start_date: datetime, end_date: datetime, comm_type: str, page_num: int, conn) -> list:
     """
     Get all the relevant publications from the current page
 
     Parameters
     ----------
-    page_source : _type_
-        _description_
-    start_date : _type_
-        _description_
-    end_date : _type_
-        _description_
-    comm_type : _type_
-        _description_
-
+    page_source : str
+        html of the current page
+    start_date : datetime
+        lower bound for the dates fo the files to process
+    end_date : datetime
+        upper bound for the dates fo the files to process
+    comm_type : str
+        iniciativas or proposiciones
+    page_num : int
+        number of the page to process
+    
     Returns
     -------
-    _type_
-        _description_
+    list
+        list with the publications that need to be processed
     """
     page_comms = []
 
-    conn = connect_mongo_db(DB_NAME)
-
-    total_comms = 0
+    out_of_range = total_comms = processed_comms = 0
     for data in methods.get_page_comms(page_source):
         comm = SenatePublication(comm_type, data, DOWNLOAD_PATH, page_num)
 
@@ -84,16 +85,21 @@ def process_page(page_source, start_date, end_date, comm_type, page_num):
                 page_comms.append(comm)
             else:
                 LOGGER.debug(f"Publication {comm._id} has already been processed")
+                processed_comms += 1
+        
+        else:
+            out_of_range += 1
 
-            total_comms += 1
+        total_comms += 1
 
-    already_processed = total_comms - len(page_comms)
-    LOGGER.info(f"{already_processed} publications out of {total_comms} are already processed")
+    LOGGER.info(f"{len(page_comms)} out of {total_comms} publications to process")
+    LOGGER.info(f"{processed_comms} are already processed")
+    LOGGER.info(f"{out_of_range} are out of the provided date range")
 
     return page_comms
 
 
-def load_legislature_data(legis_number: str, comm_type: str, start_date, end_date):
+def load_legislature_data(legis_number: str, comm_type: str, start_date: datetime, end_date: datetime, conn):
     """
     Load data from the given legislatura
 
@@ -132,17 +138,19 @@ def load_legislature_data(legis_number: str, comm_type: str, start_date, end_dat
         main_table = driver.get_element(TABLE_XPATH)
 
         LOGGER.info(f"Processing page {current_page} out of {total_pages}")
-        page_comms = process_page(main_table.get_attribute("outerHTML"), start_date, end_date, comm_type, current_page)
+        page_comms = process_page(main_table.get_attribute("outerHTML"), start_date, end_date, comm_type, current_page, conn)
         full_comms.extend(page_comms)
 
     driver.close()
             
     LOGGER.info(f"Processing {len(full_comms)} {comm_type}")
-    process_comms(full_comms)
+    process_comms(full_comms, conn)
     LOGGER.info(f"Finished saving {comm_type}")
 
 
 def senate_bot(start_date: datetime, end_date: datetime):
+
+    conn = connect_mongo_db(DB_NAME)
    
     for legis_number in LEGISLATURE_DATES:
         if start_date <= LEGISLATURE_DATES[legis_number]["end_date"] and start_date >= LEGISLATURE_DATES[legis_number]["start_date"]:
@@ -151,16 +159,16 @@ def senate_bot(start_date: datetime, end_date: datetime):
             legis_end = min(end_date, LEGISLATURE_DATES[legis_number]["end_date"])
             
             try:
-                load_legislature_data(legis_number, "iniciativas", legis_start, legis_end)
+                load_legislature_data(legis_number, "iniciativas", legis_start, legis_end, conn)
             except Exception:
                 LOGGER.error("Error loading iniciativas", exc_info=True)
 
             try:
-                load_legislature_data(legis_number, "proposiciones", legis_start, legis_end)
+                load_legislature_data(legis_number, "proposiciones", legis_start, legis_end, conn)
             except Exception:
                 LOGGER.error("Error loading proposiciones", exc_info=True)
 
-            start_date = LEGISLATURE_DATES[legis_number]["end_date"] + timedelta(days=1)
+            start_date = min(start_date, LEGISLATURE_DATES[legis_number]["end_date"] + timedelta(days=1))
 
 if __name__ == "__main__":
     start_date = methods.parse_date(sys.argv[1])

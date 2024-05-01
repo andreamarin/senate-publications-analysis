@@ -1,9 +1,13 @@
 import os
 from datetime import datetime
 
+DB_NAME = "senate-publication"
+TABLE_NAME = "publication"
+
 DRIVER_PATH = "/usr/local/bin/chromedriver"
 MAIN_URL = "https://pleno.senado.gob.mx/infosen/infosen64/index.php?c=Legislatura{legis_number}&a={type}"
 BASE_URL = "https://www.senado.gob.mx"
+BASE_URL_V2 = "https://pleno.senado.gob.mx/infosen/infosen64"
 
 HEADLESS = True
 DOWNLOAD_PATH = os.path.join(os.getcwd(), "downloads")

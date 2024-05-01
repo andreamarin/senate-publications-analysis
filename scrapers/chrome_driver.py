@@ -61,7 +61,7 @@ class ChromeDriver(Chrome):
         # open url
         self.get(url)
 
-    def wait_elemet_is_old(self, element, wait_time: int = 10):
+    def wait_element_is_old(self, element, wait_time: int = 10):
         WebDriverWait(self, wait_time).until(
             EC.staleness_of(element)
         )

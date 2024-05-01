@@ -1,13 +1,13 @@
 # Mac files
 .DS_Store
-
 # pyenv files
 .python-version
-
 # python related files
 **/__pycache__/**
-
 # projects data and notebooks
 notebooks/**
 *.pdf
 *.json
+**/config/**
+test_db.py
+scraper/errors/

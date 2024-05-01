@@ -1,19 +1,19 @@
 import sys
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # local imports
 from chrome_driver import ChromeDriver
 from publication import SenatePublication
 from utils import methods
 from utils.config import *
-from utils.db import save_publication, publication_exists
+from utils.db import connect_mongo_db, save_publications, publication_exists
 
 
 # setup loggers
 LOGGER = logging.getLogger(__name__)
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s %(name)s [%(levelname)s]: %(message)s',
     datefmt='%Y-%m-%dT%H:%M:%S'
 )
@@ -31,20 +31,26 @@ def process_comms(full_comms: list):
     full_comms : list
         list with all the publication objects to process
     """
+    conn = connect_mongo_db(DB_NAME)
+
     for i, comm in enumerate(full_comms):
         if i % 20 == 0:
             LOGGER.info(f"Saved {i} {comm.type}")
 
         # get the full data
-        try:
-            comm.build_full_doc()
-        except Exception:
-            LOGGER.error(f"Couldn't process publication {comm.id}", exc_info=True)
+        if not publication_exists(comm._id, TABLE_NAME, conn):
+            try:
+                comm.build_full_doc()
+            except Exception:
+                LOGGER.error(f"Couldn't process publication {comm.url}, from page {comm._page}", exc_info=True)
+                comm.save_table_data()
+            else:
+                save_publications(comm.get_json(), TABLE_NAME, conn)
         else:
-            save_publication(comm)
+            LOGGER.info(f"Publication {comm._id} has already been processed")
 
 
-def process_page(page_source, start_date, end_date, comm_type):
+def process_page(page_source, start_date, end_date, comm_type, page_num):
     """
     Get all the relevant publications from the current page
 
@@ -65,15 +71,24 @@ def process_page(page_source, start_date, end_date, comm_type):
         _description_
     """
     page_comms = []
+
+    conn = connect_mongo_db(DB_NAME)
+
+    total_comms = 0
     for data in methods.get_page_comms(page_source):
-        comm = SenatePublication(comm_type, data, DOWNLOAD_PATH)
+        comm = SenatePublication(comm_type, data, DOWNLOAD_PATH, page_num)
 
         if comm.date >= start_date and comm.date <= end_date:
 
-            if not publication_exists(comm.id, comm.date):
+            if not publication_exists(comm._id, TABLE_NAME, conn):
                 page_comms.append(comm)
             else:
-                LOGGER.info(f"Publication {comm.id} has already been processed")
+                LOGGER.debug(f"Publication {comm._id} has already been processed")
+
+            total_comms += 1
+
+    already_processed = total_comms - len(page_comms)
+    LOGGER.info(f"{already_processed} publications out of {total_comms} are already processed")
 
     return page_comms
 
@@ -100,31 +115,31 @@ def load_legislature_data(legis_number: str, comm_type: str, start_date, end_dat
     driver = ChromeDriver(driver_path=DRIVER_PATH, headless=HEADLESS, download_path=DOWNLOAD_PATH)
     driver.get(url)
 
+    # get total pages to process
     main_table = driver.get_element(TABLE_XPATH)
-
-    current_page = 1
     total_pages = methods.get_total_pages(main_table.get_attribute("outerHTML"))
 
     full_comms = []
-    while current_page <= total_pages:
+    for current_page in range(1, total_pages+1):
+        # load page in the desired order
+        loaded_page = methods.wait_new_page(driver, current_page, main_table)
+
+        if not loaded_page:
+            LOGGER.error(f"Can't load page number {current_page}")
+            break
+
+        # get new main table
+        main_table = driver.get_element(TABLE_XPATH)
+
         LOGGER.info(f"Processing page {current_page} out of {total_pages}")
-        page_comms = process_page(main_table.get_attribute("outerHTML"), start_date, end_date, comm_type)
+        page_comms = process_page(main_table.get_attribute("outerHTML"), start_date, end_date, comm_type, current_page)
         full_comms.extend(page_comms)
 
-        current_page += 1
-        if current_page <= total_pages:
-            driver.execute_script(LOAD_PAGE_SCRIPT.format(page_num=current_page))
-            driver.wait_elemet_is_old(main_table)
-
-            # get new main table
-            main_table = driver.get_element(TABLE_XPATH)
-
-
+    driver.close()
+            
     LOGGER.info(f"Processing {len(full_comms)} {comm_type}")
     process_comms(full_comms)
     LOGGER.info(f"Finished saving {comm_type}")
-
-    driver.close()
 
 
 def senate_bot(start_date: datetime, end_date: datetime):
@@ -134,10 +149,18 @@ def senate_bot(start_date: datetime, end_date: datetime):
             # save data from this legislature
             legis_start = max(start_date, LEGISLATURE_DATES[legis_number]["start_date"])
             legis_end = min(end_date, LEGISLATURE_DATES[legis_number]["end_date"])
+            
+            try:
+                load_legislature_data(legis_number, "iniciativas", legis_start, legis_end)
+            except Exception:
+                LOGGER.error("Error loading iniciativas", exc_info=True)
 
-            load_legislature_data(legis_number, "iniciativas", legis_start, legis_end)
-            load_legislature_data(legis_number, "proposiciones", legis_start, legis_end)
+            try:
+                load_legislature_data(legis_number, "proposiciones", legis_start, legis_end)
+            except Exception:
+                LOGGER.error("Error loading proposiciones", exc_info=True)
 
+            start_date = LEGISLATURE_DATES[legis_number]["end_date"] + timedelta(days=1)
 
 if __name__ == "__main__":
     start_date = methods.parse_date(sys.argv[1])

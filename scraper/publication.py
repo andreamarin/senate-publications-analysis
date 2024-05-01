@@ -1,3 +1,4 @@
+import os
 import re
 import hashlib
 import logging
@@ -7,14 +8,15 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 from PyPDF2 import PdfFileReader
 
-from utils.config import BASE_URL
+from utils.config import BASE_URL, BASE_URL_V2
 
 LOGGER = logging.getLogger(__name__)
 
 
 class SenatePublication():
-    def __init__(self, comm_type: str, table_data, download_path):
+    def __init__(self, comm_type: str, table_data, download_path, page: int):
         self.type = comm_type
+        self._page = page
         self.__table_data = table_data.find_all("td")
         self.__download_path = download_path
 
@@ -26,23 +28,41 @@ class SenatePublication():
         self.date = datetime.strptime(date_col.text, "%Y/%m/%d")
 
     def __get_id(self):
-        url = self.__table_data[-1].find("a").attrs["href"]
+        original_url = self.__table_data[-1].find("a")
 
-        if "https" not in url:
-            url = re.sub(r"^/", "", url)
-            self.url = f"{BASE_URL}/{url}"
+        if original_url is None:
+            self.__full_data = False
+            url = self.__table_data[0].find("a").attrs["href"]
+
+            if "https" not in url:
+                url = re.sub(r"^/", "", url)
+                self.url = f"{BASE_URL_V2}/{url}"
+            else:
+                self.url = url
         else:
-            self.url = url
+            self.__full_data = True
+            url = original_url.attrs["href"]
+
+            if "https" not in url:
+                url = re.sub(r"^/", "", url)
+                self.url = f"{BASE_URL}/{url}"
+            else:
+                self.url = url
 
         # get id form doc's url
         hash_obj = hashlib.md5(self.url.encode("utf8"))
-        self.id = hash_obj.hexdigest()
+        self._id = hash_obj.hexdigest()
 
     def build_full_doc(self):
         self.__get_summary()
         self.__get_authors_data()
-        self.__get_url_data()
-        self.__get_full_text()
+
+        if self.__full_data:
+            self.__get_url_data()
+            self.__validate_data()
+            self.__get_full_text()
+        else:
+            self.full_text = self.summary
 
     def __get_summary(self):
         summary = self.__table_data[1].text
@@ -85,29 +105,74 @@ class SenatePublication():
             raise Exception("Couldnt load url")
             
         self.__bs = BeautifulSoup(response.text, "lxml")
+
+
+    def __validate_data(self):
+        script_data = self.__bs.find("script")
+
+        if "window.location.href" in script_data.text:
+            # get the real url for the publication
+            new_url = re.search(r"window\.location\.href = \"(.*)\"", script_data.text).group(1)
+            new_url = new_url.replace("http", "https")
+
+            # replace for the real url
+            self.url = new_url
+            self.__get_url_data()
+
+    def __download_and_parse_doc(self):
+        doc_name = self.doc_url.split("/")[-1]
+        self.doc_path = f"{self.__download_path}/{doc_name}"
+
+        # download doc
+        response = requests.get(self.doc_url)
+        with open(self.doc_path, "wb") as f:
+            f.write(response.content)
+
+        # get text from pdf
+        self.__get_pdf_text()
         
     def __get_full_text(self):
         main_container = self.__bs.find("div", {"class": "container-fluid bg-content main"})
-        panel = main_container.find("div", {"class": "panel-group"}).find_all("div", {"class": "panel panel-default"}, recursive=False)[2]
 
-        heading = panel.find("div", "panel-heading")
-
-        if heading is not None and "Archivos para descargar" in heading.text: 
-            # there is a doc to download
-            self.doc_url = panel.find("a").attrs["href"]
-            
-            doc_name = self.doc_url.split("/")[-1]
-            self.doc_path = f"{self.__download_path}/{doc_name}"
-
-            # download doc
-            response = requests.get(self.doc_url)
-            with open(self.doc_path, "wb") as f:
-                f.write(response.content)
-
-            # get text from pdf
-            self.__get_pdf_text()
+        if main_container is None:
+            self.__get_full_text_v2()
         else:
-            self.full_text = panel.get_text(separator="\n", strip=True)
+            panel = main_container.find("div", {"class": "panel-group"}).find_all("div", {"class": "panel panel-default"}, recursive=False)[2]
+
+            heading = panel.find("div", "panel-heading")
+
+            if heading is not None and "Archivos para descargar" in heading.text: 
+                # there is a doc to download
+                self.doc_url = panel.find("a").attrs["href"]
+                
+                self.__download_and_parse_doc()
+            else:
+                self.full_text = panel.get_text(separator="\n", strip=True)
+
+    def __get_full_text_v2(self):
+        main_container = self.__bs.find("div", {"class": "container-fluid main"})
+        
+        # get all the headers in the main container
+        header_divs = main_container.find_all("div", {"class": "card-header"})
+        headers = [h.text.strip() for h in header_divs]
+
+        try:
+            header_pos = headers.index("Archivos para descargar:")
+        except ValueError:
+            LOGGER.debug("Download doc not found")
+            doc_panel = None
+        else:
+            # get the body after the download header
+            doc_panel = header_divs[header_pos].find_next_sibling(attrs={"class": "card-body"})
+
+        if doc_panel is not None: 
+            # there is a doc to download
+            self.doc_url = doc_panel.find("a").attrs["href"]
+            
+            self.__download_and_parse_doc()
+        else:
+            text_panel = main_container.find_all("div", {"class": "card-body"})[1]
+            self.full_text = text_panel.get_text(separator="\n", strip=True)
 
     def __get_pdf_text(self):           
         pdf = PdfFileReader(open(self.doc_path, "rb"))
@@ -127,3 +192,19 @@ class SenatePublication():
             pages_texts.append(page_text)
 
         self.full_text = "\n".join(pages_texts)
+
+    def get_json(self):
+        return {k: v for k, v in self.__dict__.items() if not k.startswith("_") or  k == "_id"}
+    
+    def save_table_data(self):
+
+        # build doc name
+        doc_path = self.__download_path.replace("downloads", "errors")
+        doc_id = self.url.split("/")[-1]
+        doc_name = f"{doc_path}/{self.type}_{doc_id}.html"
+
+        if not os.path.exists(doc_path):
+            os.makedirs(doc_path)
+
+        with open(doc_name, "wb") as f:
+            f.write(self.__table_data)

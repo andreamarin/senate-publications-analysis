@@ -76,7 +76,7 @@ class SenatePublication():
         authors_text = self.__table_data[3].get_text(separator="\n", strip=True)
 
         if authors_text == "":
-            LOGGER.warning("No authors data found")
+            LOGGER.warning(f"No authors data found for {self.url}")
             self.authors = []
             self.parties = []
         else:
@@ -140,7 +140,7 @@ class SenatePublication():
         # download doc
         response = requests.get(self.doc_url)
         if response.status_code != 200:
-            LOGGER.warning(f"Couldn't download file, status {response.status_code}")
+            LOGGER.warning(f"Couldn't download file {self.doc_url} , status {response.status_code}")
             self.full_text = self.summary
         else:
             with open(self.doc_path, "wb") as f:
@@ -169,6 +169,11 @@ class SenatePublication():
 
     def __get_full_text_v2(self):
         main_container = self.__bs.find("div", {"class": "container-fluid main"})
+
+        if main_container is None:
+            LOGGER.warning(f"No data for {self.url}")
+            self.full_text = self.summary()
+            return
         
         # get all the headers in the main container
         header_divs = main_container.find_all("div", {"class": "card-header"})
@@ -192,8 +197,11 @@ class SenatePublication():
             text_panel = main_container.find_all("div", {"class": "card-body"})[1]
             self.full_text = text_panel.get_text(separator="\n", strip=True)
 
-    def __get_pdf_text(self):           
-        pdf = PdfFileReader(open(self.doc_path, "rb"))
+    def __get_pdf_text(self):
+        try:           
+            pdf = PdfFileReader(open(self.doc_path, "rb"))
+        except Exception as ex:
+            pdf = PdfFileReader(open(self.doc_path, "rb"), strict=False)
 
         LOGGER.debug(f"pdf has {pdf.numPages} pages")
 

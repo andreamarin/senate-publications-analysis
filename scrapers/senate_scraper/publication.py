@@ -14,9 +14,10 @@ LOGGER = logging.getLogger(__name__)
 
 
 class SenatePublication():
-    def __init__(self, comm_type: str, table_data, download_path, page: int):
+    def __init__(self, comm_type: str, table_data, download_path: str, page: int):
         self.type = comm_type
         self._page = page
+        self.__raw_table_data = str(table_data)
         self.__table_data = table_data.find_all("td")
         self.__download_path = download_path
 
@@ -69,17 +70,24 @@ class SenatePublication():
         self.summary = summary.replace("\n", " ")
 
     def __get_authors_data(self):
-        authors = self.__table_data[3].get_text(separator="\n", strip=True)
-        
-       # get all the authors and parties involves 
-        self.authors = []
-        parties = set()
-        for author in authors.split("\n"):
-            author_info = re.match(r"(.+?) \((.*)\)", author)
-            self.authors.append(author_info.group(1))
-            parties.add(author_info.group(2))
+        """
+        Get the senators and political parties involved
+        """
+        authors_text = self.__table_data[3].get_text(separator="\n", strip=True)
 
-        self.parties = list(parties)
+        if authors_text == "":
+            LOGGER.warning(f"No authors data found for {self.url}")
+            self.authors = []
+            self.parties = []
+        else:
+            self.authors = []
+            parties = set()
+            for author in authors_text.split("\n"):
+                author_info = re.match(r"(.+?) \((.*)\)", author)
+                self.authors.append(author_info.group(1))
+                parties.add(author_info.group(2))
+
+            self.parties = list(parties)
 
     def __get_url_data(self):
         LOGGER.debug(self.url)
@@ -106,8 +114,11 @@ class SenatePublication():
             
         self.__bs = BeautifulSoup(response.text, "lxml")
 
-
     def __validate_data(self):
+        """
+        Check if the loaded page has a redirect url, if so use that as the 
+        publication's url and load it
+        """
         script_data = self.__bs.find("script")
 
         if "window.location.href" in script_data.text:
@@ -120,16 +131,23 @@ class SenatePublication():
             self.__get_url_data()
 
     def __download_and_parse_doc(self):
+        """
+        Download the doc and get the full text from the pdf
+        """
         doc_name = self.doc_url.split("/")[-1]
         self.doc_path = f"{self.__download_path}/{doc_name}"
 
         # download doc
         response = requests.get(self.doc_url)
-        with open(self.doc_path, "wb") as f:
-            f.write(response.content)
+        if response.status_code != 200:
+            LOGGER.warning(f"Couldn't download file {self.doc_url} , status {response.status_code}")
+            self.full_text = self.summary
+        else:
+            with open(self.doc_path, "wb") as f:
+                f.write(response.content)
 
-        # get text from pdf
-        self.__get_pdf_text()
+            # get text from pdf
+            self.__get_pdf_text()
         
     def __get_full_text(self):
         main_container = self.__bs.find("div", {"class": "container-fluid bg-content main"})
@@ -151,6 +169,11 @@ class SenatePublication():
 
     def __get_full_text_v2(self):
         main_container = self.__bs.find("div", {"class": "container-fluid main"})
+
+        if main_container is None:
+            LOGGER.warning(f"No data for {self.url}")
+            self.full_text = self.summary
+            return
         
         # get all the headers in the main container
         header_divs = main_container.find_all("div", {"class": "card-header"})
@@ -174,10 +197,14 @@ class SenatePublication():
             text_panel = main_container.find_all("div", {"class": "card-body"})[1]
             self.full_text = text_panel.get_text(separator="\n", strip=True)
 
-    def __get_pdf_text(self):           
-        pdf = PdfFileReader(open(self.doc_path, "rb"))
+    def __get_pdf_text(self):
+        try:           
+            pdf = PdfFileReader(open(self.doc_path, "rb"))
+            LOGGER.debug(f"pdf has {pdf.numPages} pages")
 
-        LOGGER.debug(f"pdf has {pdf.numPages} pages")
+        except Exception:
+            pdf = PdfFileReader(open(self.doc_path, "rb"), strict=False)
+            LOGGER.debug(f"pdf has {pdf.numPages} pages")
 
         pages_texts = []
         for page_num in range(pdf.numPages):
@@ -206,5 +233,5 @@ class SenatePublication():
         if not os.path.exists(doc_path):
             os.makedirs(doc_path)
 
-        with open(doc_name, "wb") as f:
-            f.write(self.__table_data)
+        with open(doc_name, "w") as f:
+            f.write(self.__raw_table_data)

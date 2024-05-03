@@ -93,8 +93,8 @@ def process_page(page_source: str, start_date: datetime, end_date: datetime, com
         total_comms += 1
 
     LOGGER.info(f"{len(page_comms)} out of {total_comms} publications to process")
-    LOGGER.info(f"{processed_comms} are already processed")
-    LOGGER.info(f"{out_of_range} are out of the provided date range")
+    LOGGER.debug(f"{processed_comms} are already processed")
+    LOGGER.debug(f"{out_of_range} are out of the provided date range")
 
     return page_comms
 
@@ -168,7 +168,7 @@ def senate_bot(start_date: datetime, end_date: datetime):
             except Exception:
                 LOGGER.error("Error loading proposiciones", exc_info=True)
 
-            start_date = min(start_date, LEGISLATURE_DATES[legis_number]["end_date"] + timedelta(days=1))
+            start_date = LEGISLATURE_DATES[legis_number]["end_date"] + timedelta(days=1)
 
 if __name__ == "__main__":
     start_date = methods.parse_date(sys.argv[1])

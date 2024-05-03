@@ -172,7 +172,7 @@ class SenatePublication():
 
         if main_container is None:
             LOGGER.warning(f"No data for {self.url}")
-            self.full_text = self.summary()
+            self.full_text = self.summary
             return
         
         # get all the headers in the main container
@@ -200,10 +200,11 @@ class SenatePublication():
     def __get_pdf_text(self):
         try:           
             pdf = PdfFileReader(open(self.doc_path, "rb"))
-        except Exception as ex:
-            pdf = PdfFileReader(open(self.doc_path, "rb"), strict=False)
+            LOGGER.debug(f"pdf has {pdf.numPages} pages")
 
-        LOGGER.debug(f"pdf has {pdf.numPages} pages")
+        except Exception:
+            pdf = PdfFileReader(open(self.doc_path, "rb"), strict=False)
+            LOGGER.debug(f"pdf has {pdf.numPages} pages")
 
         pages_texts = []
         for page_num in range(pdf.numPages):

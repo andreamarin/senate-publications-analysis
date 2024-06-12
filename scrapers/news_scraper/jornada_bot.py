@@ -43,7 +43,25 @@ def get_article_data(url: str):
         summary_text = None
  
     news_text = soup.find("div", {"id": "article-text"}).text
-    news_text = re.sub("^(\n *)+", "", news_text)
+
+    # replace unwanted characters
+    news_text = news_text.replace(u'\xa0', u' ')
+
+    # replace unwanted data
+    for class_name in ["pie-foto", "credito-autor", "credito-titulo", "hemero"]:
+        replace_div = soup.find("div", {"class": class_name})
+
+        if replace_div is not None:
+            replace_text = replace_div.text.strip()
+            if len(replace_text) > 0:
+                replace_text = f"\n *{replace_text} *\n"
+                news_text = re.sub(replace_text, "\n", news_text)
+    
+    # replace multiple new lines with just one
+    news_text = re.sub("(\n *)+", "\n", news_text)
+
+    # remove leading \n and spaces
+    news_text = news_text.strip("\n").strip()
 
     article_data = {
         "url": url, 
@@ -53,6 +71,7 @@ def get_article_data(url: str):
     }
     
     return article_data
+
 
 def get_articles_parallel(url: str) -> tuple[dict, str]:
     """

@@ -44,6 +44,9 @@ def get_article_data(url: str):
  
     news_text = soup.find("div", {"id": "article-text"}).text
 
+    # replace unwanted characters
+    news_text = news_text.replace(u'\xa0', u' ')
+
     # replace unwanted data
     for class_name in ["pie-foto", "credito-autor", "credito-titulo", "hemero"]:
         replace_div = soup.find("div", {"class": class_name})
@@ -68,6 +71,7 @@ def get_article_data(url: str):
     }
     
     return article_data
+
 
 def get_articles_parallel(url: str) -> tuple[dict, str]:
     """

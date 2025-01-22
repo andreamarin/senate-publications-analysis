@@ -6,7 +6,7 @@
 **/__pycache__/**
 **/.ipynb_checkpoints/**
 # projects data and notebooks
-notebooks/**
+helper_notebooks/**
 *.pdf
 *.json
 *.zip

@@ -218,3 +218,19 @@ def replace_string(text, replacement_regex, replacement):
     clean_text = clean_text + text[last_end:]
         
     return clean_text
+
+
+def get_word_context(text: str, context_word: str, before_words: int = 0, after_words: int = 0):
+    context_regex = " "
+
+    if before_words > 0:
+        context_regex += f"(?:[\wÁÉÍÓÚáéíóú.,]+ ){{0,{before_words}}}"
+    
+    context_regex += context_word
+
+    if after_words > 0:
+        context_regex += f"(?: [\wÁÉÍÓÚáéíóú.,]+){{0,{after_words}}}"
+
+    context_regex += " "
+
+    return re.findall(context_regex, text)

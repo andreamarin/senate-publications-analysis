@@ -1,0 +1,4 @@
+pymongo==4.3.3
+pandas==2.2.2
+tqdm==4.67.1
+regex==2024.5.15

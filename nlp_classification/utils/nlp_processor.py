@@ -19,24 +19,13 @@ class NlpProcessor:
         self,
         texts_df: pd.DataFrame,
         spacy_model_name: str,
-        folder_name: str,
-        num_topics_config: dict,
         process_text_config: dict,
+        extra_processing = None
     ):
         self._nlp = spacy.load(spacy_model_name)
         self._texts_df = texts_df
 
-        self._topics_range = range(
-            num_topics_config.get("min_topics", 3),
-            num_topics_config.get("max_topics", 15),
-            num_topics_config.get("step_size", 3),
-        )
-
-        current_path = pathlib.Path(__file__).parent.resolve()
-        base_path = current_path.parent.resolve()
-
-        self._images_path = f"{base_path}/{folder_name}/coherence_scores"
-        self._models_path = f"{base_path}/{folder_name}/models"
+        self._extra_processing_function = extra_processing
 
         self._remove_words = process_text_config.get("remove_words", [])
         self._stop_words = process_text_config.get("stop_words", [])
@@ -57,6 +46,9 @@ class NlpProcessor:
         """
         Clean text (create lemmas, remove special characters, remove stop words)
         """
+        if self._extra_processing_function is not None:
+            processed_text = self._extra_processing_function(processed_text)
+
         # remove specific words (before lemmatizing)
         for word in self._remove_words:
             text = text.replace(word, "")

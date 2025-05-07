@@ -16,11 +16,10 @@ class LDAModelBuilder:
     def __init__(
         self,
         texts_df: pd.DataFrame,
-        spacy_model_name: str,
         folder_name: str,
         num_topics_config: dict,
+        base_path: str = None
     ):
-        self._nlp = spacy.load(spacy_model_name)
         self._texts_df = texts_df
 
         self._topics_range = range(
@@ -30,7 +29,7 @@ class LDAModelBuilder:
         )
 
         current_path = pathlib.Path(__file__).parent.resolve()
-        base_path = current_path.parent.resolve()
+        base_path = current_path.parent.resolve() if base_path is None else base_path
 
         self._images_path = f"{base_path}/{folder_name}/coherence_scores"
         self._models_path = f"{base_path}/{folder_name}/models"

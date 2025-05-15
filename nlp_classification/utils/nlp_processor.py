@@ -47,7 +47,7 @@ class NlpProcessor:
         Clean text (create lemmas, remove special characters, remove stop words)
         """
         if self._extra_processing_function is not None:
-            processed_text = self._extra_processing_function(processed_text)
+            processed_text = self._extra_processing_function(text)
 
         # remove specific words (before lemmatizing)
         for word in self._remove_words:

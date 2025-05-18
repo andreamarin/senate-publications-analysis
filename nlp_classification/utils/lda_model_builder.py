@@ -1,5 +1,4 @@
 import os
-import spacy
 import pickle
 import pathlib
 import numpy as np

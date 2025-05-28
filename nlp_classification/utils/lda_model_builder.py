@@ -39,6 +39,8 @@ class LDAModelBuilder:
         words = list(model_data.apply(str.split))
 
         base_dir = f"{self._models_path}/{model_id}"
+        if not os.path.exists(base_dir):
+            os.makedirs(base_dir)
 
         # dictionary of words
         dictionary_path = f"{base_dir}/dictionary.pkl"

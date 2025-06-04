@@ -17,7 +17,8 @@ class LDAModelBuilder:
         texts_df: pd.DataFrame,
         folder_name: str,
         num_topics_config: dict,
-        base_path: str = None
+        base_path: str = None,
+        model_passes: int = 300
     ):
         self._texts_df = texts_df
 
@@ -32,6 +33,8 @@ class LDAModelBuilder:
 
         self._images_path = f"{base_path}/{folder_name}/coherence_scores"
         self._models_path = f"{base_path}/{folder_name}/models"
+
+        self._model_passes = model_passes
 
     def _generate_models(
         self, model_id: str, model_data: pd.Series, force_replacement: bool = False
@@ -80,7 +83,7 @@ class LDAModelBuilder:
             else:
                 # create lda model
                 model = LdaModel(
-                    corpus, num_topics=num_topics, id2word=dictionary, passes=300
+                    corpus, num_topics=num_topics, id2word=dictionary, passes=self._model_passes
                 )
 
                 # save model to drive

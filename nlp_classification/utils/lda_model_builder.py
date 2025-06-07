@@ -24,7 +24,7 @@ class LDAModelBuilder:
 
         self._topics_range = range(
             num_topics_config.get("min_topics", 3),
-            num_topics_config.get("max_topics", 15),
+            num_topics_config.get("max_topics", 15) + 1,
             num_topics_config.get("step_size", 3),
         )
 
@@ -94,12 +94,12 @@ class LDAModelBuilder:
                 num_topics=num_topics, num_words=10
             )
 
-        # calculate coherence score
-        cm = CoherenceModel(
-            model=model, texts=words, dictionary=dictionary, coherence="c_v"
-        )
-        coherence_lda = cm.get_coherence()
-        self.coherence_scores.append(coherence_lda)
+            # calculate coherence score
+            cm = CoherenceModel(
+                model=model, texts=words, dictionary=dictionary, coherence="c_v"
+            )
+            coherence_lda = cm.get_coherence()
+            self._coherence_scores.append(coherence_lda)
 
     def _create_coherence_plot(self, model_id: str):
         plt.figure(figsize=(10, 6))

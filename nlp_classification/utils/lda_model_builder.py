@@ -211,17 +211,28 @@ class LDAModelBuilder:
         model_id = f"{text_type}_{filter}"
         self._load_model(model_id, num_topics)
 
+        model = self.models[model_id][num_topics]
+
         # create df with topics
         topics_df = pd.DataFrame()
-        for num_topic, topic_words in self.models[model_id][num_topics].print_topics(
+        for num_topic, topic_words in model.print_topics(
             num_topics=num_topics, num_words=10
         ):
             topics_df[f"topic_{num_topic}"] = topic_words.split(" + ")
 
         # generalte topic visualization
-        vis = pyLDAvis.gensim.prepare(self.model, self.corpus, self.dictionary)
+        vis = pyLDAvis.gensim.prepare(model, self.corpus, self.dictionary)
 
         return topics_df, vis
+    
+    def set_model(self, text_type: str, num_topics: int, filter: str = "all"):
+        model_id = f"{text_type}_{filter}"
+        self._load_model(model_id, num_topics)
+
+        self.model = self.models.get(model_id, dict()).get(num_topics)
+
+        if self.model is None:
+            raise ValueError(f"Model not found for specs: {model_id}, {num_topics}")
 
     def get_publication_topics(self, text):
         words = text.split()

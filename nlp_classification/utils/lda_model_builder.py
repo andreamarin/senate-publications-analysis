@@ -235,7 +235,7 @@ class LDAModelBuilder:
 
     def print_topics(self, text_type: str, filter: str = "all", num_topics_list: list = []):
         """
-        Print the topics for the provided model specs
+        Print the topics for the provided model specs 
         """
 
         topics_list = [num_topics_list] if num_topics_list else self._topics_range

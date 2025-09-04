@@ -208,7 +208,7 @@ class LDAModelBuilder:
 
     def generate_model_vis(self, text_type: str, num_topics: int, filter: str = "all"):
 
-        model_id = f"{text_type}_{num_topics}"
+        model_id = f"{text_type}_{filter}"
         self._load_model(model_id, num_topics)
 
         # create df with topics

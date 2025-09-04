@@ -165,7 +165,7 @@ class LDAModelBuilder:
         plt.savefig(f"{self._images_path}/{img_name}.png", format="png", dpi=300)
         plt.show()
 
-    def _load_dictionary(self, model_dir: str):
+    def _load_dictionary(self, model_id: str):
         """
         Load the dictionary and corpus for the given model
 
@@ -175,7 +175,7 @@ class LDAModelBuilder:
             path where the dictionary and corpus are saved
         """
         # dictionary of words
-        dictionary_path = f"{model_dir}/dictionary.pkl"
+        dictionary_path = f"{self._models_path}/{model_id}/dictionary.pkl"
 
         if not os.path.exists(dictionary_path):
             raise ValueError(f"Dictionary for model doesn't exist at: {dictionary_path}")
@@ -183,7 +183,7 @@ class LDAModelBuilder:
         self.dictionary = pickle.load(open(dictionary_path, "rb"))
 
         # corpus with bag of words
-        corpus_path = f"{model_dir}/corpus.pkl"
+        corpus_path = f"{self._models_path}/{model_id}/corpus.pkl"
 
         if not os.path.exists(corpus_path):
             raise ValueError(f"Corpus for model doesn't exist at: {corpus_path}")
@@ -209,7 +209,10 @@ class LDAModelBuilder:
     def generate_model_vis(self, text_type: str, num_topics: int, filter: str = "all"):
 
         model_id = f"{text_type}_{filter}"
+
+        # load the needed data
         self._load_model(model_id, num_topics)
+        self._load_dictionary(model_id)
 
         model = self.models[model_id][num_topics]
 

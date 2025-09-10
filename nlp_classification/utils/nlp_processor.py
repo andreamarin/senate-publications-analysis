@@ -1,5 +1,6 @@
 import re
 import spacy
+import string
 import numpy as np
 import pandas as pd
 from functools import partial
@@ -48,6 +49,10 @@ class NlpProcessor:
         # remove multiple spaces
         text = re.sub(r" +", " ", text)
         text = text.strip()
+
+        # remove punctuation marks
+        translator = str.maketrans('', '', string.punctuation)
+        text = text.translate(translator)
 
         # lemmatize text
         nlp_text = self._nlp(text)

@@ -1,4 +1,5 @@
 import re
+import regex
 import spacy
 import string
 import numpy as np
@@ -49,13 +50,12 @@ class NlpProcessor:
         for word in self._remove_words:
             processed_text = processed_text.replace(word, "")
 
+        # remove punctuation marks
+        processed_text = regex.sub(r"\p{P}+", "", processed_text)
+
         # remove multiple spaces
         processed_text = re.sub(r" +", " ", processed_text)
         processed_text = processed_text.strip()
-
-        # remove punctuation marks
-        translator = str.maketrans('', '', string.punctuation)
-        processed_text = processed_text.translate(translator)
 
         # lemmatize text and turn to lower case
         nlp_text = self._nlp(processed_text)

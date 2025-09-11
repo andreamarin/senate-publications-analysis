@@ -39,43 +39,40 @@ class NlpProcessor:
         """
         Clean text (create lemmas, remove special characters, remove stop words)
         """
+        processed_text = text
+
+        # execute functions
         for function in self._extra_processing_steps:
-            processed_text = function(text)
+            processed_text = function(processed_text)
 
         # remove specific words (before lemmatizing)
         for word in self._remove_words:
-            text = text.replace(word, "")
+            processed_text = processed_text.replace(word, "")
 
         # remove multiple spaces
-        text = re.sub(r" +", " ", text)
-        text = text.strip()
+        processed_text = re.sub(r" +", " ", processed_text)
+        processed_text = processed_text.strip()
 
         # remove punctuation marks
         translator = str.maketrans('', '', string.punctuation)
-        text = text.translate(translator)
+        processed_text = processed_text.translate(translator)
 
-        # lemmatize text
-        nlp_text = self._nlp(text)
-        lemmas = [word.lemma_ for word in nlp_text]
-
-        normalized_text = " ".join(lemmas)
-
-        # remove special characters
-        normalized_text = normalized_text.lower()
-        normalized_text = re.sub(r"[^a-záéíóúñ\d\s_]", "", normalized_text, re.A)
+        # lemmatize text and turn to lower case
+        nlp_text = self._nlp(processed_text)
+        lemmas = [word.lemma_.lower() for word in nlp_text]
 
         if self._stop_words:
             # remove stopwords
-            tokens = normalized_text.split(" ")
             filtered_tokens = [
-                token for token in tokens if token not in self._stop_words
+                token for token in lemmas if token not in self._stop_words
             ]
 
             processed_text = " ".join(filtered_tokens)
         else:
-            processed_text = normalized_text
+            # join all the tokens
+            processed_text = " ".join(lemmas)
 
-        return processed_text
+        return processed_text.strip()
 
     def _filter_by_pos(self, text: str, pos_tags: list):
         """

@@ -1,5 +1,4 @@
 import os
-import spacy
 import pickle
 import pathlib
 import numpy as np
@@ -16,24 +15,30 @@ class LDAModelBuilder:
     def __init__(
         self,
         texts_df: pd.DataFrame,
-        spacy_model_name: str,
         folder_name: str,
         num_topics_config: dict,
+        base_path: str = None,
+        model_passes: int = 300
     ):
-        self._nlp = spacy.load(spacy_model_name)
         self._texts_df = texts_df
 
         self._topics_range = range(
             num_topics_config.get("min_topics", 3),
-            num_topics_config.get("max_topics", 15),
+            num_topics_config.get("max_topics", 15) + 1,
             num_topics_config.get("step_size", 3),
         )
 
         current_path = pathlib.Path(__file__).parent.resolve()
-        base_path = current_path.parent.resolve()
+        base_path = current_path.parent.resolve() if base_path is None else base_path
 
         self._images_path = f"{base_path}/{folder_name}/coherence_scores"
         self._models_path = f"{base_path}/{folder_name}/models"
+
+        self._model_passes = model_passes
+
+        self.dictionary = None
+        self.corpus = None
+        self.models = dict()
 
     def _generate_models(
         self, model_id: str, model_data: pd.Series, force_replacement: bool = False
@@ -41,6 +46,8 @@ class LDAModelBuilder:
         words = list(model_data.apply(str.split))
 
         base_dir = f"{self._models_path}/{model_id}"
+        if not os.path.exists(base_dir):
+            os.makedirs(base_dir)
 
         # dictionary of words
         dictionary_path = f"{base_dir}/dictionary.pkl"
@@ -80,8 +87,14 @@ class LDAModelBuilder:
             else:
                 # create lda model
                 model = LdaModel(
-                    corpus, num_topics=num_topics, id2word=dictionary, passes=300
+                    corpus, num_topics=num_topics, id2word=dictionary, passes=self._model_passes
                 )
+
+                # save model to dictionary
+                if model_id not in self.models:
+                    self.models[model_id] = dict()
+
+                self.models[model_id][num_topics] = model
 
                 # save model to drive
                 model.save(model_path)
@@ -91,12 +104,12 @@ class LDAModelBuilder:
                 num_topics=num_topics, num_words=10
             )
 
-        # calculate coherence score
-        cm = CoherenceModel(
-            model=model, texts=words, dictionary=dictionary, coherence="c_v"
-        )
-        coherence_lda = cm.get_coherence()
-        self.coherence_scores.append(coherence_lda)
+            # calculate coherence score
+            cm = CoherenceModel(
+                model=model, texts=words, dictionary=dictionary, coherence="c_v"
+            )
+            coherence_lda = cm.get_coherence()
+            self._coherence_scores.append(coherence_lda)
 
     def _create_coherence_plot(self, model_id: str):
         plt.figure(figsize=(10, 6))
@@ -152,34 +165,77 @@ class LDAModelBuilder:
         plt.savefig(f"{self._images_path}/{img_name}.png", format="png", dpi=300)
         plt.show()
 
-    def load_model_results(self, text_type, num_topics, filter: str = "all"):
-        model_id = f"{text_type}_{filter}"
-        base_dir = f"{self._models_path}/{model_id}"
+    def _load_dictionary(self, model_id: str):
+        """
+        Load the dictionary and corpus for the given model
 
+        Parameters
+        ----------
+        model_dir : str
+            path where the dictionary and corpus are saved
+        """
         # dictionary of words
-        dictionary_path = f"{base_dir}/dictionary.pkl"
+        dictionary_path = f"{self._models_path}/{model_id}/dictionary.pkl"
+
+        if not os.path.exists(dictionary_path):
+            raise ValueError(f"Dictionary for model doesn't exist at: {dictionary_path}")
+
         self.dictionary = pickle.load(open(dictionary_path, "rb"))
 
         # corpus with bag of words
-        corpus_path = f"{base_dir}/corpus.pkl"
+        corpus_path = f"{self._models_path}/{model_id}/corpus.pkl"
+
+        if not os.path.exists(corpus_path):
+            raise ValueError(f"Corpus for model doesn't exist at: {corpus_path}")
+        
         self.corpus = pickle.load(open(corpus_path, "rb"))
-
+    
+    def _load_model(self, model_id: str, num_topics: int):
         # load model
-        model_path = f"{base_dir}/{num_topics}_topics/lda"
-        self.model = LdaModel.load(model_path)
+        model_path = f"{self._models_path}/{model_id}/{num_topics}_topics/lda"
 
-    def generate_model_data(self, num_topics):
+        if self.models.get(model_id, dict()).get(num_topics, None):
+            # model already loaded
+            return
+
+        if not os.path.exists(model_path):
+            raise ValueError(f"Model doesn't exist at: {model_path}")
+        
+        if model_id not in self.models:
+            self.models[model_id] = dict()
+
+        self.models[model_id][num_topics] = LdaModel.load(model_path)
+
+    def generate_model_vis(self, text_type: str, num_topics: int, filter: str = "all"):
+
+        model_id = f"{text_type}_{filter}"
+
+        # load the needed data
+        self._load_model(model_id, num_topics)
+        self._load_dictionary(model_id)
+
+        model = self.models[model_id][num_topics]
+
         # create df with topics
         topics_df = pd.DataFrame()
-        for num_topic, topic_words in self.model.print_topics(
+        for num_topic, topic_words in model.print_topics(
             num_topics=num_topics, num_words=10
         ):
             topics_df[f"topic_{num_topic}"] = topic_words.split(" + ")
 
         # generalte topic visualization
-        vis = pyLDAvis.gensim.prepare(self.model, self.corpus, self.dictionary)
+        vis = pyLDAvis.gensim.prepare(model, self.corpus, self.dictionary)
 
         return topics_df, vis
+    
+    def set_model(self, text_type: str, num_topics: int, filter: str = "all"):
+        model_id = f"{text_type}_{filter}"
+        self._load_model(model_id, num_topics)
+
+        self.model = self.models.get(model_id, dict()).get(num_topics)
+
+        if self.model is None:
+            raise ValueError(f"Model not found for specs: {model_id}, {num_topics}")
 
     def get_publication_topics(self, text):
         words = text.split()
@@ -190,3 +246,22 @@ class LDAModelBuilder:
             publication_topics.append({"topic": topic, "score": float(score)})
 
         return publication_topics
+
+    def print_topics(self, text_type: str, filter: str = "all", num_topics_list: list = []):
+        """
+        Print the topics for the provided model specs 
+        """
+
+        topics_list = [num_topics_list] if num_topics_list else self._topics_range
+        model_id = f"{text_type}_{filter}"
+
+        for num_topics in topics_list:
+            print("====="*10)
+            print(f"Topics for: {model_id}, {num_topics}")
+
+            # load model output
+            self._load_model(model_id, num_topics)
+
+            # get the topics
+            for topic in self.models[model_id][num_topics].print_topics(num_topics=num_topics, num_words=10):
+                print(topic)

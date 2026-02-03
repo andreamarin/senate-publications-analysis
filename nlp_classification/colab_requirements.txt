@@ -1,0 +1,5 @@
+pymongo==4.14.1
+pyLDAvis==3.4.1
+spacy==3.8.7
+gensim==4.3.3
+scipy==1.13.1

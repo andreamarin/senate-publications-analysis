@@ -10,7 +10,8 @@ from hdbscan import HDBSCAN
 from bertopic import BERTopic
 from dataclasses import dataclass
 from sentence_transformers import SentenceTransformer
-from nlp_classification.utils.bertopic_evaluator import BerTopicEvaluator
+
+from utils import BerTopicEvaluator
 
 
 class DocumentRepresentation(str, Enum):

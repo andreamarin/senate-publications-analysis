@@ -11,7 +11,7 @@ from bertopic import BERTopic
 from dataclasses import dataclass
 from sentence_transformers import SentenceTransformer
 
-from utils import BerTopicEvaluator
+from .bertopic_evaluator import BerTopicEvaluator
 
 
 class DocumentRepresentation(str, Enum):

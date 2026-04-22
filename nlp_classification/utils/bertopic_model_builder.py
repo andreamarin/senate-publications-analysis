@@ -139,7 +139,10 @@ class BerTopicModelBuilder:
 
     Loads or computes sentence-transformer embeddings (with optional
     sentence-level chunking and pooling), then fits BERTopic using precomputed
-    vectors. Output paths are rooted at ``nlp_classification/<folder_name>/``.
+    vectors. After fitting, it runs :class:`BerTopicEvaluator` to compute topic
+    quality metrics (coherence variants, silhouette score, topic diversity) and
+    persists results to disk. Output paths are rooted at
+    ``nlp_classification/<folder_name>/``.
 
     Parameters
     ----------
@@ -155,8 +158,12 @@ class BerTopicModelBuilder:
     umap_config : UMAPConfig
         UMAP settings kept on the instance as ``umap_model`` (for consumers that
         pass a custom BERTopic pipeline).
+    hdbscan_config : HDBSCANConfig
+        HDBSCAN settings kept on the instance as ``hdbscan_model``.
     verbose : bool, default=False
         If True, show encoding progress from ``SentenceTransformer``.
+    base_path : str, default=None
+        Base path for model storage. If not provided, uses the package root.
 
     Attributes
     ----------
@@ -171,6 +178,19 @@ class BerTopicModelBuilder:
         Topic probabilities when returned by BERTopic, set by :meth:`fit_transform`.
     embeddings : numpy.ndarray
         Matrix passed to ``BERTopic.fit_transform``, set by :meth:`_load_embeddings`.
+    evaluation_results : dict or None
+        Evaluation payload computed by :class:`BerTopicEvaluator` after
+        :meth:`fit_transform`, including coherence, silhouette, and diversity
+        metrics.
+    coherence_score : float or None
+        Backward-compatible alias for ``evaluation_results['coherence_c_v']``.
+
+    Notes
+    -----
+    Embeddings and chunked texts are cached under ``models/``. Evaluation
+    tokenization/dictionary/corpus caches are stored under
+    ``models/evaluation_cache/`` and keyed by texts, document representation,
+    and fitted BERTopic vectorizer state.
     """
     def __init__(
         self,
@@ -180,7 +200,7 @@ class BerTopicModelBuilder:
         embedding_config: EmbeddingConfig,
         umap_config: UMAPConfig,
         hdbscan_config: HDBSCANConfig,
-        verbose: bool = False
+        verbose: bool = False,
         base_path: str = None
     ):
         self._document_texts = texts_df[text_column].tolist()

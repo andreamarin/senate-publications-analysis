@@ -181,12 +181,13 @@ class BerTopicModelBuilder:
         umap_config: UMAPConfig,
         hdbscan_config: HDBSCANConfig,
         verbose: bool = False
+        base_path: str = None
     ):
         self._document_texts = texts_df[text_column].tolist()
         self._verbose = verbose
 
         current_path = pathlib.Path(__file__).parent.resolve()
-        base_path = current_path.parent.resolve()
+        base_path = current_path.parent.resolve() if base_path is None else base_path
 
         self._images_path = f"{base_path}/{folder_name}/coherence_scores"
         self._models_path = f"{base_path}/{folder_name}/models"

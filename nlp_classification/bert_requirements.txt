@@ -8,3 +8,4 @@ scikit-learn>=1.6
 sentence-transformers==5.3.0
 spacy==3.7.5
 umap-learn==0.5.7
+pyLDAvis==3.4.1

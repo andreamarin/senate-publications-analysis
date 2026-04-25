@@ -1,4 +1,5 @@
 import os
+import logging
 import spacy
 import pathlib
 import numpy as np
@@ -12,6 +13,35 @@ from dataclasses import dataclass
 from sentence_transformers import SentenceTransformer
 
 from .bertopic_evaluator import BerTopicEvaluator
+
+logger = logging.getLogger(__name__)
+
+
+def setup_builder_logging(level: int = logging.INFO) -> logging.Logger:
+    """Configure a stream logger for this module when not configured yet.
+
+    Parameters
+    ----------
+    level : int, default=logging.INFO
+        Logging level to set on the module logger.
+
+    Returns
+    -------
+    logging.Logger
+        Configured module logger.
+    """
+    logger.setLevel(level)
+
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter(
+            "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+        )
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+
+    logger.propagate = False
+    return logger
 
 
 class DocumentRepresentation(str, Enum):
@@ -205,6 +235,8 @@ class BerTopicModelBuilder:
     ):
         self._document_texts = texts_df[text_column].tolist()
         self._verbose = verbose
+        if self._verbose:
+            setup_builder_logging()
 
         current_path = pathlib.Path(__file__).parent.resolve()
         base_path = current_path.parent.resolve() if base_path is None else base_path
@@ -241,6 +273,11 @@ class BerTopicModelBuilder:
         os.makedirs(self._embeddings_path, exist_ok=True)
         os.makedirs(self._chunks_path, exist_ok=True)
         os.makedirs(self._evaluation_cache_path, exist_ok=True)
+
+    def _log(self, message: str) -> None:
+        """Emit progress messages only when verbose mode is enabled."""
+        if self._verbose:
+            logger.info("[BerTopicModelBuilder] %s", message)
         
     def _sentence_chunking(self, text, nlp):
         """Split ``text`` into sentence-based chunks up to ``max_words`` each.
@@ -286,13 +323,17 @@ class BerTopicModelBuilder:
         doc_ids_full_path = os.path.join(self._chunks_path, self._ec.doc_ids_file)
 
         if os.path.exists(chunks_full_path) and os.path.exists(doc_ids_full_path):
+            self._log("Loading chunk cache from disk.")
             self._texts = pd.read_pickle(chunks_full_path)
             self._doc_ids = np.load(doc_ids_full_path)
+            self._log(f"Loaded {len(self._texts)} chunks.")
         else:
+            self._log("Chunk cache not found. Building chunks with spaCy.")
             chunk_texts = []
             doc_ids = []
 
             nlp = spacy.load(self._ec.spacy_model)
+            self._log(f"Loaded spaCy model: {self._ec.spacy_model}")
 
             for doc_id, text in enumerate(self._document_texts):
                 chunks = self._sentence_chunking(text, nlp)
@@ -302,9 +343,11 @@ class BerTopicModelBuilder:
 
             self._texts = chunk_texts
             self._doc_ids = np.asarray(doc_ids, dtype=np.int64)
+            self._log(f"Created {len(self._texts)} chunks from {len(self._document_texts)} documents.")
 
             pd.to_pickle(self._texts, chunks_full_path)
             np.save(doc_ids_full_path, self._doc_ids)
+            self._log("Saved chunk cache to disk.")
 
     def _pool_document_embeddings(
         self, chunk_embeddings: np.ndarray, mode: str
@@ -351,23 +394,34 @@ class BerTopicModelBuilder:
         embeddings_file_path = os.path.join(self._embeddings_path, self._ec.embeddings_file)
 
         if os.path.exists(embeddings_file_path) and not self._ec.force_compute:
+            self._log(f"Loading embeddings cache: {self._ec.embeddings_file}")
             self.embeddings = np.load(embeddings_file_path)
+            self._log(f"Embeddings loaded with shape {self.embeddings.shape}.")
 
             if self._ec.document_representation is DocumentRepresentation.CHUNKS:
                 # load chunks as the list of texts
                 self._load_chunks()
             else:
                 self._texts = list(self._document_texts)
+                self._log(f"Using {len(self._texts)} full documents as BERTopic texts.")
 
             return
         
+        if self._ec.force_compute:
+            self._log("force_compute=True, recomputing embeddings.")
+        else:
+            self._log("Embeddings cache not found. Computing embeddings.")
+
+        self._log(f"Loading embedding model: {self._ec.embedding_model}")
         embedding_model = SentenceTransformer(self._ec.embedding_model)
 
         if self._ec.document_representation is not DocumentRepresentation.FULL_TEXT:
+            self._log(f"Document representation: {self._ec.document_representation.value}")
             # create chunks for sentences
             self._load_chunks()
 
             # encode the chunks
+            self._log(f"Encoding {len(self._texts)} chunks.")
             chunk_embeddings = embedding_model.encode(
                 self._texts, show_progress_bar=self._verbose
             )
@@ -375,19 +429,25 @@ class BerTopicModelBuilder:
                 # pool the embeddings by the mean and set the texts to the original documents
                 self.embeddings = self._pool_document_embeddings(chunk_embeddings, "mean")
                 self._texts = list(self._document_texts)
+                self._log("Applied mean pooling to chunk embeddings.")
             elif self._ec.document_representation is DocumentRepresentation.MAX_POOLING:
                 # pool the embeddings by the max and set the texts to the original documents
                 self.embeddings = self._pool_document_embeddings(chunk_embeddings, "max")
                 self._texts = list(self._document_texts)
+                self._log("Applied max pooling to chunk embeddings.")
             else:
                 self.embeddings = chunk_embeddings
+                self._log("Using chunk-level embeddings without pooling.")
         else:
+            self._log("Document representation: full_text")
             self._texts = list(self._document_texts)
+            self._log(f"Encoding {len(self._texts)} full documents.")
             self.embeddings = embedding_model.encode(
                 self._texts, show_progress_bar=self._verbose
             )
 
         np.save(embeddings_file_path, self.embeddings)
+        self._log(f"Saved embeddings cache: {self._ec.embeddings_file}")
 
     def fit_transform(self):
         """Fit ``BERTopic`` on cached or fresh embeddings.
@@ -403,14 +463,26 @@ class BerTopicModelBuilder:
             Per-document (or per-chunk) topic probabilities when available.
         """
         # 1. load the embeddings
+        self._log("Starting fit_transform.")
         self._load_embeddings()
+        self._log(
+            f"Prepared {len(self._texts)} texts and embeddings with shape {self.embeddings.shape}."
+        )
 
         # 2. create the bertopic model
+        self._log("Initializing BERTopic model with configured UMAP and HDBSCAN.")
         self.topic_model = BERTopic(umap_model=self.umap_model, hdbscan_model=self.hdbscan_model)
 
         # fit the data susing the existing embeddings
+        self._log("Fitting BERTopic model.")
         self.topics, self.probs = self.topic_model.fit_transform(self._texts, self.embeddings)
+        n_topics = len(set(self.topics)) - (1 if -1 in self.topics else 0)
+        outliers = int(np.sum(np.asarray(self.topics) == -1))
+        self._log(
+            f"BERTopic fit complete. Found {n_topics} topics. Outlier assignments: {outliers}."
+        )
 
+        self._log("Running BERTopic evaluator.")
         evaluator = BerTopicEvaluator(
             topic_model=self.topic_model,
             texts=self._texts,
@@ -421,6 +493,9 @@ class BerTopicModelBuilder:
         )
         self.evaluation_results = evaluator.evaluate()
         self.coherence_score = self.evaluation_results.get("coherence_c_v")
+        self._log(
+            f"Evaluation complete. coherence_c_v={self.coherence_score}"
+        )
         evaluator.save(
             results=self.evaluation_results,
             output_path=self._coherence_score_path,
@@ -428,3 +503,4 @@ class BerTopicModelBuilder:
                 "document_representation": self._ec.document_representation.value,
             },
         )
+        self._log(f"Saved evaluation results to {self._coherence_score_path}")

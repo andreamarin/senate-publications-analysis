@@ -46,13 +46,11 @@ def setup_builder_logging(level: int = logging.INFO) -> logging.Logger:
 
 
 class BerTopicModelBuilder:
-    """Build a :class:`bertopic.BERTopic` model with optional embedding caches.
+    """Build a :class:`bertopic.BERTopic` model with cache-first execution.
 
-    Loads or computes sentence-transformer embeddings (with optional
-    sentence-level chunking and pooling), then fits BERTopic using precomputed
-    vectors. After fitting, it runs :class:`BerTopicEvaluator` to compute topic
-    quality metrics (coherence variants, silhouette score, topic diversity) and
-    persists results to disk. Output paths are rooted at
+    For each expensive stage (chunks, embeddings, model outputs, visualizations,
+    evaluation metrics), the builder tries to load on-disk artifacts first and
+    only recomputes missing pieces. Output paths are rooted at
     ``nlp_classification/<folder_name>/``.
 
     Parameters
@@ -98,10 +96,10 @@ class BerTopicModelBuilder:
 
     Notes
     -----
-    Embeddings and chunked texts are cached under ``models/``. Evaluation
-    tokenization/dictionary/corpus caches are stored under
-    ``models/evaluation_cache/`` and keyed by texts, document representation,
-    and fitted BERTopic vectorizer state.
+    The run directory (keyed by ``model_id``) stores BERTopic fit artifacts:
+    fitted model, topics/probabilities, visualizations, and evaluation metrics.
+    Shared caches under ``models_cache/`` store embeddings/chunks and evaluator
+    corpus caches.
     """
     def __init__(
         self,
@@ -119,58 +117,55 @@ class BerTopicModelBuilder:
         if self._verbose:
             setup_builder_logging()
 
+        # Save config objects and build model_id.
+        self._ec = embedding_config
+        self._umap_config = umap_config
+        self._hdbscan_config = hdbscan_config
+        self.model_id = self._build_model_id()
+
         current_path = pathlib.Path(__file__).parent.resolve()
         base_path = current_path.parent.resolve() if base_path is None else base_path
 
         self._base_output_path = f"{base_path}/{folder_name}"
         self._runs_path = f"{self._base_output_path}/runs"
-        self._models_path = f"{self._base_output_path}/models"
-        self._embeddings_path = f"{self._models_path}/embeddings"
-        self._chunks_path = f"{self._models_path}/text_chunks"
-        self._evaluation_cache_path = f"{self._models_path}/evaluation_cache"
+        self._cache_path = f"{self._base_output_path}/models_cache"
 
-        self._ec = embedding_config
-        self._umap_config = umap_config
-        self._hdbscan_config = hdbscan_config
-        self.model_id = self._build_model_id()
+        # objects re-used by bertopic or the evaluator
+        self._embeddings_path = f"{self._cache_path}/embeddings"
+        self._chunks_path = f"{self._cache_path}/text_chunks"
+        self._evaluation_cache_path = f"{self._cache_path}/evaluation"
+
+
         self._run_path = os.path.join(self._runs_path, self.model_id)
-        self._model_artifact_path = os.path.join(self._run_path, "model")
-        self._images_path = os.path.join(self._run_path, "coherence_scores")
         self._visualizations_path = os.path.join(self._run_path, "visualizations")
-        self._coherence_score_path = os.path.join(
-            self._images_path,
-            "bertopic_coherence_scores.json",
+        self._evaluation_metrics_path = os.path.join(
+            self._run_path,
+            "evaluation_metrics.json",
         )
         self._saved_model_path = os.path.join(
-            self._model_artifact_path,
+            self._run_path,
             "bertopic_model",
         )
+        self._topics_path = os.path.join(self._run_path, "topics.npy")
+        self._probs_path = os.path.join(self._run_path, "probs.npy")
 
         self._init_folders()
 
-        # save umap model config
-        self.umap_model = UMAP(
-            n_neighbors=umap_config.n_neighbors,
-            metric=umap_config.metric
-        )
-
-        # save hdbscan model config
-        self.hdbscan_model = HDBSCAN(
-            min_cluster_size=hdbscan_config.min_cluster_size,
-            metric=hdbscan_config.metric,
-            prediction_data=False
-        )
+        self.topic_model = None
+        self.topics = None
+        self.probs = None
+        self.embeddings = None
+        self.coherence_score = None
         self.evaluation_results = None
 
     def _init_folders(self) -> None:
-        """Create run, cache, and artifact directories if missing."""
+        """Create all run and cache directories required for cache-first flow."""
         os.makedirs(self._base_output_path, exist_ok=True)
         os.makedirs(self._runs_path, exist_ok=True)
+        os.makedirs(self._cache_path, exist_ok=True)
         os.makedirs(self._run_path, exist_ok=True)
-        os.makedirs(self._images_path, exist_ok=True)
+        os.makedirs(self._saved_model_path, exist_ok=True)
         os.makedirs(self._visualizations_path, exist_ok=True)
-        os.makedirs(self._model_artifact_path, exist_ok=True)
-        os.makedirs(self._models_path, exist_ok=True)
         os.makedirs(self._embeddings_path, exist_ok=True)
         os.makedirs(self._chunks_path, exist_ok=True)
         os.makedirs(self._evaluation_cache_path, exist_ok=True)
@@ -386,7 +381,11 @@ class BerTopicModelBuilder:
         self._log(f"Saved embeddings cache: {self._ec.embeddings_file}")
 
     def _save_visualizations(self) -> None:
-        """Generate and save BERTopic visualizations as HTML files."""
+        """Generate and save any missing BERTopic visualization files.
+
+        HTML outputs are required artifacts for each visualization type. Static
+        image snapshots are best-effort and depend on Plotly export backends.
+        """
         visualizations = [
             (f"{self.model_id}_topics_pyldavis.html", self.topic_model.visualize_topics),
             (f"{self.model_id}_heatmap.html", self.topic_model.visualize_heatmap),
@@ -399,26 +398,36 @@ class BerTopicModelBuilder:
 
         for file_name, visualize_fn in visualizations:
             output_path = os.path.join(self._visualizations_path, file_name)
+            png_path = output_path.replace(".html", ".png")
+            jpg_path = output_path.replace(".html", ".jpg")
+            has_html = os.path.exists(output_path)
+            has_snapshot = os.path.exists(png_path) or os.path.exists(jpg_path)
+
+            if has_html and has_snapshot:
+                self._log(f"Skipping existing visualization and snapshot: {output_path}")
+                continue
+
             try:
                 fig = visualize_fn()
-                fig.write_html(output_path)
-                self._log(f"Saved visualization: {output_path}")
-                image_path = output_path.replace(".html", ".png")
-                try:
-                    fig.write_image(image_path)
-                    self._log(f"Saved visualization snapshot: {image_path}")
-                except Exception:
-                    fallback_image_path = output_path.replace(".html", ".jpg")
+                if not has_html:
+                    fig.write_html(output_path)
+                    self._log(f"Saved visualization: {output_path}")
+
+                if not has_snapshot:
                     try:
-                        fig.write_image(fallback_image_path)
-                        self._log(f"Saved visualization snapshot: {fallback_image_path}")
-                    except Exception as image_ex:
-                        logger.warning(
-                            "Could not save image snapshot for '%s'. "
-                            "Install/enable Plotly static export dependencies (e.g. kaleido). Error: %s",
-                            file_name,
-                            image_ex,
-                        )
+                        fig.write_image(png_path)
+                        self._log(f"Saved visualization snapshot: {png_path}")
+                    except Exception:
+                        try:
+                            fig.write_image(jpg_path)
+                            self._log(f"Saved visualization snapshot: {jpg_path}")
+                        except Exception as image_ex:
+                            logger.warning(
+                                "Could not save image snapshot for '%s'. "
+                                "Install/enable Plotly static export dependencies (e.g. kaleido). Error: %s",
+                                file_name,
+                                image_ex,
+                            )
             except Exception as ex:
                 logger.warning(
                     "Could not save visualization '%s': %s",
@@ -426,19 +435,126 @@ class BerTopicModelBuilder:
                     ex,
                 )
 
+        missing_html = [
+            file_name
+            for file_name, _ in visualizations
+            if not os.path.exists(os.path.join(self._visualizations_path, file_name))
+        ]
+        if missing_html:
+            raise RuntimeError(
+                "Missing BERTopic visualization artifacts after generation attempt: "
+                + ", ".join(missing_html)
+            )
+
+    def _load_model(self, force_compute: bool=False) -> bool:
+        """Load a fitted BERTopic model from disk or initialize a new one.
+
+        Returns
+        -------
+        bool
+            ``True`` when a model is loaded from disk, ``False`` when a new
+            in-memory model is initialized.
+        """
+
+        if not force_compute and os.path.isdir(self._saved_model_path) and len(os.listdir(self._saved_model_path)) > 0:
+            self.topic_model = BERTopic.load(self._saved_model_path)
+            self._log(f"Loaded saved BERTopic model: {self._saved_model_path}")
+            return True
+        else:
+            self._log("Initializing BERTopic model with configured UMAP and HDBSCAN.")
+
+            umap_model = UMAP(
+                n_neighbors=self._umap_config.n_neighbors,
+                n_components=self._umap_config.n_components,
+                min_dist=self._umap_config.min_dist,
+                metric=self._umap_config.metric,
+                random_state=self._umap_config.random_state,
+            )
+
+            hdbscan_model = HDBSCAN(
+                min_cluster_size=self._hdbscan_config.min_cluster_size,
+                metric=self._hdbscan_config.metric,
+                prediction_data=False,
+            )
+
+            self.topic_model = BERTopic(
+                umap_model=umap_model,
+                hdbscan_model=hdbscan_model,
+                verbose=self._verbose,
+            )
+            return False
+
     def _save_model(self) -> None:
-        """Persist fitted BERTopic model using the deterministic model id."""
+        """Persist the fitted BERTopic model to the run directory."""
         try:
             self.topic_model.save(self._saved_model_path)
             self._log(f"Saved BERTopic model: {self._saved_model_path}")
         except Exception as ex:
             logger.warning("Could not save BERTopic model '%s': %s", self._saved_model_path, ex)
 
-    def fit_transform(self):
-        """Fit ``BERTopic`` on cached or fresh embeddings.
+    def _save_topics_probs(self) -> None:
+        """Persist topics and probabilities arrays for this run."""
+        try:
+            np.save(self._topics_path, np.asarray(self.topics))
+            np.save(self._probs_path, np.asarray(self.probs, dtype=object))
+            self._log(f"Saved topics/probs artifacts: {self._topics_path}, {self._probs_path}")
+        except Exception as ex:
+            logger.warning("Could not save topics/probs artifacts: %s", ex)
 
-        Sets ``topic_model``, ``topics``, ``probs``, and delegates embedding
-        setup to :meth:`_load_embeddings`.
+    def _load_saved_evaluation_results(self) -> bool:
+        """Load evaluator results from disk into instance attributes."""
+        if not os.path.exists(self._evaluation_metrics_path):
+            return False
+
+        try:
+            with open(self._evaluation_metrics_path, "r", encoding="utf-8") as fp:
+                payload = json.load(fp)
+            self.evaluation_results = payload
+            self.coherence_score = payload.get("coherence_c_v")
+            self._log(f"Loaded saved evaluation results: {self._evaluation_metrics_path}")
+            return True
+        except Exception as ex:
+            logger.warning(
+                "Could not load evaluation results '%s': %s",
+                self._evaluation_metrics_path,
+                ex,
+            )
+            return False
+
+    def _fit_transform_model(self, force_compute: bool=False) -> bool:
+        """Load cached BERTopic outputs, or fit and cache them.
+
+        Returns
+        -------
+        bool
+            ``True`` when topics/probabilities were loaded from cache,
+            ``False`` when a new fit was executed.
+        """
+        if not force_compute and os.path.exists(self._topics_path) and os.path.exists(self._probs_path):
+            self.topics = np.load(self._topics_path)
+            self.probs = np.load(self._probs_path, allow_pickle=True)
+            self._log("Loaded cached topics/probs arrays.")
+            return True
+        else:
+            self._log("Fitting BERTopic model.")
+            self.topics, self.probs = self.topic_model.fit_transform(self._texts, self.embeddings)
+            self._save_topics_probs()
+            self._save_model()
+            return False
+
+    def fit_transform(self):
+        """Execute BERTopic pipeline with cache-first semantics.
+
+        Cache lookup order:
+        1) embeddings/chunks, 2) fitted BERTopic model, 3) topics/probs,
+        4) visualizations, 5) evaluation metrics.
+        Missing artifacts are computed and persisted.
+
+        After this method returns, the builder guarantees:
+        - ``topic_model`` is available and usable
+        - ``topics``/``probs`` are in memory
+        - visualization files were attempted and missing ones generated
+        - evaluation metrics are loaded into ``evaluation_results``
 
         Returns
         -------
@@ -447,59 +563,72 @@ class BerTopicModelBuilder:
         probs : numpy.ndarray or None
             Per-document (or per-chunk) topic probabilities when available.
         """
-        # 1. load the embeddings
         self._log("Starting fit_transform.")
+        
         self._load_embeddings()
         self._log(
             f"Prepared {len(self._texts)} texts and embeddings with shape {self.embeddings.shape}."
         )
 
-        # 2. create the bertopic model
-        self._log("Initializing BERTopic model with configured UMAP and HDBSCAN.")
-        self.topic_model = BERTopic(
-            umap_model=self.umap_model, 
-            hdbscan_model=self.hdbscan_model,
-            verbose=self._verbose
-        )
+        model_loaded = self._load_model()
 
-        # fit the data susing the existing embeddings
-        self._log("Fitting BERTopic model.")
-        self.topics, self.probs = self.topic_model.fit_transform(self._texts, self.embeddings)
+        outputs_loaded = self._fit_transform_model()
+        if outputs_loaded and not model_loaded:
+            # Topics/probs cache without a fitted BERTopic model is inconsistent.
+            # Refit once so the builder always ends with a working topic_model.
+            self._log(
+                "Found cached topics/probs without cached fitted model. "
+                "Refitting BERTopic to rebuild model artifact."
+            )
+            self._load_model(force_compute=True)
+            self._fit_transform_model(force_compute=True)
+        elif model_loaded and not outputs_loaded:
+            self._log("Model cache hit but topics/probs cache missing. Recomputed fit outputs.")
+            self._fit_transform_model(force_compute=True)
+
+
+        if self.topic_model is None or self.topics is None:
+            raise RuntimeError("BERTopic fit did not produce a usable topic model and topic assignments.")
+
         n_topics = len(set(self.topics)) - (1 if -1 in self.topics else 0)
         outliers = int(np.sum(np.asarray(self.topics) == -1))
         self._log(
             f"BERTopic fit complete. Found {n_topics} topics. Outlier assignments: {outliers}."
         )
-        self._log(f"Model id: {self.model_id}")
-        self._log("Saving BERTopic model.")
-        self._save_model()
-        self._log("Saving BERTopic visualizations.")
+
+        self._log("Ensuring BERTopic visualizations are present.")
         self._save_visualizations()
 
-        self._log("Running BERTopic evaluator.")
-        evaluator = BerTopicEvaluator(
-            topic_model=self.topic_model,
-            texts=self._texts,
-            topics=self.topics,
-            embeddings=self.embeddings,
-            cache_dir=self._evaluation_cache_path,
-            document_representation=self._ec.document_representation.value,
-            model_id=self.model_id,
-        )
-        self.evaluation_results = evaluator.evaluate()
+        if not self._load_saved_evaluation_results():
+            self._log("Running BERTopic evaluator.")
+            evaluator = BerTopicEvaluator(
+                topic_model=self.topic_model,
+                texts=self._texts,
+                topics=self.topics,
+                embeddings=self.embeddings,
+                cache_dir=self._evaluation_cache_path,
+                document_representation=self._ec.document_representation.value,
+                model_id=self.model_id,
+            )
+            self.evaluation_results = evaluator.evaluate()
+
+            evaluator.save(
+                results=self.evaluation_results,
+                output_path=self._evaluation_metrics_path,
+                metadata={
+                    "model_id": self.model_id,
+                    "document_representation": self._ec.document_representation.value,
+                    "embedding_config": asdict(self._ec),
+                    "umap_config": asdict(self._umap_config),
+                    "hdbscan_config": asdict(self._hdbscan_config),
+                },
+            )
+            self._log(f"Saved evaluation results to {self._evaluation_metrics_path}")
+
+        if self.evaluation_results is None:
+            raise RuntimeError("Evaluation metrics are missing after fit_transform execution.")
+
         self.coherence_score = self.evaluation_results.get("coherence_c_v")
         self._log(
             f"Evaluation complete. coherence_c_v={self.coherence_score}"
         )
-        evaluator.save(
-            results=self.evaluation_results,
-            output_path=self._coherence_score_path,
-            metadata={
-                "model_id": self.model_id,
-                "document_representation": self._ec.document_representation.value,
-                "embedding_config": asdict(self._ec),
-                "umap_config": asdict(self._umap_config),
-                "hdbscan_config": asdict(self._hdbscan_config),
-            },
-        )
-        self._log(f"Saved evaluation results to {self._coherence_score_path}")

@@ -28,7 +28,7 @@ def _load_run_metrics(metrics_path: pathlib.Path) -> dict[str, Any]:
     with metrics_path.open("r", encoding="utf-8") as fp:
         payload = json.load(fp)
 
-    model_id = payload.get("model_id") or metrics_path.parents[1].name
+    model_id = payload.get("model_id") or metrics_path.parents[0].name
     row = {"model_id": model_id, "metrics_path": str(metrics_path)}
     for metric in METRICS_TO_PLOT:
         row[metric] = payload.get(metric)
@@ -117,12 +117,12 @@ def generate_metrics_comparison_graphs(
     """
     base = pathlib.Path(base_path)
     metrics_files = sorted(
-        base.rglob("runs/*/coherence_scores/bertopic_coherence_scores.json")
+        base.rglob("runs/*/evaluation_metrics.json")
     )
     if not metrics_files:
         raise FileNotFoundError(
             f"No run metrics files found under '{base}'. "
-            "Expected: runs/*/coherence_scores/bertopic_coherence_scores.json"
+            "Expected: runs/*/evaluation_metrics.json"
         )
 
     rows = [_load_run_metrics(path) for path in metrics_files]

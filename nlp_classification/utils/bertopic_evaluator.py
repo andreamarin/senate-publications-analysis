@@ -82,6 +82,7 @@ class BerTopicEvaluator:
         embeddings: np.ndarray,
         cache_dir: str | None = None,
         document_representation: str | None = None,
+        model_id: str | None = None,
     ):
         self._topic_model = topic_model
         self._texts = texts
@@ -89,6 +90,7 @@ class BerTopicEvaluator:
         self._embeddings = embeddings
         self._cache_dir = cache_dir
         self._document_representation = document_representation
+        self._model_id = model_id
 
     def evaluate(self, top_n_words: int = 10) -> dict[str, Any]:
         """Compute coherence, silhouette, and topic-diversity metrics.
@@ -136,6 +138,9 @@ class BerTopicEvaluator:
             "topic_diversity": self._compute_topic_diversity(topics_words),
             "top_n_words": top_n_words,
             "topics_count": len(topics_words),
+            "outliers_count": int(np.sum(self._topics == -1)),
+            "outliers_ratio": float(np.mean(self._topics == -1)),
+            "documents_count": int(self._topics.shape[0]),
         }
 
         return metrics
@@ -145,6 +150,7 @@ class BerTopicEvaluator:
         payload = {
             **results,
             **metadata,
+            "model_id": self._model_id,
             "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         }
         with open(output_path, "w", encoding="utf-8") as fp:

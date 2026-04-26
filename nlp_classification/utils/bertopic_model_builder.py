@@ -1,17 +1,18 @@
 import os
+import json
+import hashlib
 import logging
 import spacy
 import pathlib
 import numpy as np
 import pandas as pd
 from umap import UMAP
-from enum import Enum
-from typing import Union
+from dataclasses import asdict
 from hdbscan import HDBSCAN
 from bertopic import BERTopic
-from dataclasses import dataclass
 from sentence_transformers import SentenceTransformer
 
+from .bertopic_config import EmbeddingConfig, UMAPConfig, HDBSCANConfig, DocumentRepresentation
 from .bertopic_evaluator import BerTopicEvaluator
 
 logger = logging.getLogger(__name__)
@@ -42,126 +43,6 @@ def setup_builder_logging(level: int = logging.INFO) -> logging.Logger:
 
     logger.propagate = False
     return logger
-
-
-class DocumentRepresentation(str, Enum):
-    """Strategy for turning each document into one or more embedding rows.
-
-    Chunking modes split text with spaCy, embed segments, then either aggregate
-    back to one vector per source document (pooling) or keep one vector per
-    chunk. ``FULL_TEXT`` embeds each document as a single string.
-
-    Attributes
-    ----------
-    MEAN_POOLING : DocumentRepresentation
-        Embed chunks, then take the element-wise mean within each document.
-    MAX_POOLING : DocumentRepresentation
-        Embed chunks, then take the element-wise maximum within each document.
-    CHUNKS : DocumentRepresentation
-        One embedding per chunk; BERTopic receives multiple rows per document.
-    FULL_TEXT : DocumentRepresentation
-        No chunking; one embedding row per input document.
-    """
-    MEAN_POOLING = "mean_pooling"
-    MAX_POOLING = "max_pooling"
-    CHUNKS = "chunks"
-    FULL_TEXT = "full_text"
-
-
-@dataclass
-class UMAPConfig:
-    """Parameters for ``umap.UMAP`` used to reduce embedding dimensionality.
-
-    Attributes
-    ----------
-    n_neighbors : int
-        Number of neighbors for the UMAP graph.
-    metric : str, default='cosine'
-        Distance metric passed to ``umap.UMAP``
-    min_dist: float, default=0.1
-        Minimum distance between points in the UMAP embedding.
-    random_state: int, default=20260415
-        Random seed for reproducibility.
-    n_components: int, default=10
-        Number of components in the UMAP embedding.
-    """
-    n_neighbors: int
-    metric: str = 'cosine'
-    min_dist: float = 0.1
-    random_state: int = 20260415
-    n_components: int = 10
-
-
-@dataclass
-class HDBSCANConfig:
-    """Parameters for ``hdbscan.HDBSCAN`` used to cluster embeddings.
-
-    Attributes
-    ----------
-    min_cluster_size: int
-        Minimum number of samples in a cluster.
-    metric: str, default='euclidean'
-        Distance metric passed to ``hdbscan.HDBSCAN``.
-    cluster_selection_method: str, default='eom'
-        Method for selecting clusters.
-    """
-    min_cluster_size: int
-    metric: str = 'euclidean'
-
-
-@dataclass
-class EmbeddingConfig:
-    """Configuration for sentence embeddings, chunking, and on-disk caches.
-
-    Attributes
-    ----------
-    embedding_model : str
-        Name or path for :class:`sentence_transformers.SentenceTransformer`.
-    max_words : int
-        Soft limit on words per chunk when chunk-based modes are active.
-    spacy_model : str
-        spaCy pipeline name for sentence segmentation and chunking.
-    document_representation : DocumentRepresentation or str
-        How documents map to embedding rows; invalid values mapped to
-        ``FULL_TEXT``.
-    force_compute : bool, default=False
-        If True, recompute embeddings even when a cache file exists.
-    embeddings_file : str
-        Set in ``__post_init__``: filename for the ``.npy`` embedding matrix.
-    chunks_file : str, optional
-        Set only when ``document_representation`` is not ``FULL_TEXT``:
-        pickle filename for chunk strings.
-    doc_ids_file : str, optional
-        Set only when ``document_representation`` is not ``FULL_TEXT``:
-        ``.npy`` filename for the chunk-to-document id map.
-
-    Notes
-    -----
-    Chunk-related paths are created only for non-``FULL_TEXT`` modes; see
-    :class:`BerTopicModelBuilder`.
-    """
-    embedding_model: str
-    max_words: int
-    spacy_model: str
-    document_representation: Union[DocumentRepresentation, str]
-    force_compute: bool = False
-
-    def __post_init__(self) -> None:
-        """Normalize ``document_representation`` and set cache filenames."""
-        dr = self.document_representation
-
-        if isinstance(dr, str):
-            try:
-                self.document_representation = DocumentRepresentation(dr)
-            except ValueError:
-                self.document_representation = DocumentRepresentation.FULL_TEXT
-
-        if self.document_representation is not DocumentRepresentation.FULL_TEXT:
-            self.embeddings_file = f"embeddings_{self.document_representation.value}_{self.max_words}.npy"
-            self.chunks_file = f"chunks_{self.max_words}.pkl"
-            self.doc_ids_file = f"doc_ids_{self.max_words}.npy"
-        else:
-            self.embeddings_file = f"embeddings_{self.document_representation.value}.npy"
 
 
 class BerTopicModelBuilder:
@@ -241,16 +122,31 @@ class BerTopicModelBuilder:
         current_path = pathlib.Path(__file__).parent.resolve()
         base_path = current_path.parent.resolve() if base_path is None else base_path
 
-        self._images_path = f"{base_path}/{folder_name}/coherence_scores"
-        self._models_path = f"{base_path}/{folder_name}/models"
+        self._base_output_path = f"{base_path}/{folder_name}"
+        self._runs_path = f"{self._base_output_path}/runs"
+        self._models_path = f"{self._base_output_path}/models"
         self._embeddings_path = f"{self._models_path}/embeddings"
         self._chunks_path = f"{self._models_path}/text_chunks"
         self._evaluation_cache_path = f"{self._models_path}/evaluation_cache"
-        self._coherence_score_path = f"{self._images_path}/bertopic_coherence_scores.json"
-
-        self._init_folders()
 
         self._ec = embedding_config
+        self._umap_config = umap_config
+        self._hdbscan_config = hdbscan_config
+        self.model_id = self._build_model_id()
+        self._run_path = os.path.join(self._runs_path, self.model_id)
+        self._model_artifact_path = os.path.join(self._run_path, "model")
+        self._images_path = os.path.join(self._run_path, "coherence_scores")
+        self._visualizations_path = os.path.join(self._run_path, "visualizations")
+        self._coherence_score_path = os.path.join(
+            self._images_path,
+            "bertopic_coherence_scores.json",
+        )
+        self._saved_model_path = os.path.join(
+            self._model_artifact_path,
+            "bertopic_model",
+        )
+
+        self._init_folders()
 
         # save umap model config
         self.umap_model = UMAP(
@@ -267,8 +163,13 @@ class BerTopicModelBuilder:
         self.evaluation_results = None
 
     def _init_folders(self) -> None:
-        """Create coherence, model, embedding, and chunk directories if missing."""
+        """Create run, cache, and artifact directories if missing."""
+        os.makedirs(self._base_output_path, exist_ok=True)
+        os.makedirs(self._runs_path, exist_ok=True)
+        os.makedirs(self._run_path, exist_ok=True)
         os.makedirs(self._images_path, exist_ok=True)
+        os.makedirs(self._visualizations_path, exist_ok=True)
+        os.makedirs(self._model_artifact_path, exist_ok=True)
         os.makedirs(self._models_path, exist_ok=True)
         os.makedirs(self._embeddings_path, exist_ok=True)
         os.makedirs(self._chunks_path, exist_ok=True)
@@ -278,6 +179,41 @@ class BerTopicModelBuilder:
         """Emit progress messages only when verbose mode is enabled."""
         if self._verbose:
             logger.info("[BerTopicModelBuilder] %s", message)
+
+    def _build_model_id(self) -> str:
+        """Build a human-readable deterministic id from model configs."""
+        payload = {
+            "embedding_config": asdict(self._ec),
+            "umap_config": asdict(self._umap_config),
+            "hdbscan_config": asdict(self._hdbscan_config),
+        }
+        payload_str = json.dumps(payload, sort_keys=True, default=str)
+        hash_suffix = hashlib.sha256(payload_str.encode("utf-8")).hexdigest()[:8]
+
+        embedding_model_slug = str(self._ec.embedding_model).replace("\\", "/").split("/")[-1]
+        embedding_model_slug = (
+            embedding_model_slug.replace(" ", "_")
+            .replace(".", "_")
+            .replace("-", "_")
+            .lower()
+        )
+
+        representation = self._ec.document_representation.value
+        max_words = self._ec.max_words
+        umap_neighbors = self._umap_config.n_neighbors
+        umap_components = self._umap_config.n_components
+        hdbscan_min_cluster = self._hdbscan_config.min_cluster_size
+
+        readable_prefix = (
+            f"emb_{embedding_model_slug}"
+            f"__rep_{representation}"
+            f"__mw_{max_words}"
+            f"__umap_n{umap_neighbors}_c{umap_components}"
+            f"__hdb_mcs{hdbscan_min_cluster}"
+        )
+        # Keep file/folder names manageable while still readable.
+        readable_prefix = readable_prefix[:120]
+        return f"{readable_prefix}__{hash_suffix}"
         
     def _sentence_chunking(self, text, nlp):
         """Split ``text`` into sentence-based chunks up to ``max_words`` each.
@@ -449,6 +385,55 @@ class BerTopicModelBuilder:
         np.save(embeddings_file_path, self.embeddings)
         self._log(f"Saved embeddings cache: {self._ec.embeddings_file}")
 
+    def _save_visualizations(self) -> None:
+        """Generate and save BERTopic visualizations as HTML files."""
+        visualizations = [
+            (f"{self.model_id}_topics_pyldavis.html", self.topic_model.visualize_topics),
+            (f"{self.model_id}_heatmap.html", self.topic_model.visualize_heatmap),
+            (f"{self.model_id}_hierarchy.html", self.topic_model.visualize_hierarchy),
+            (
+                f"{self.model_id}_barchart_top20.html",
+                lambda: self.topic_model.visualize_barchart(top_n_topics=20),
+            ),
+        ]
+
+        for file_name, visualize_fn in visualizations:
+            output_path = os.path.join(self._visualizations_path, file_name)
+            try:
+                fig = visualize_fn()
+                fig.write_html(output_path)
+                self._log(f"Saved visualization: {output_path}")
+                image_path = output_path.replace(".html", ".png")
+                try:
+                    fig.write_image(image_path)
+                    self._log(f"Saved visualization snapshot: {image_path}")
+                except Exception:
+                    fallback_image_path = output_path.replace(".html", ".jpg")
+                    try:
+                        fig.write_image(fallback_image_path)
+                        self._log(f"Saved visualization snapshot: {fallback_image_path}")
+                    except Exception as image_ex:
+                        logger.warning(
+                            "Could not save image snapshot for '%s'. "
+                            "Install/enable Plotly static export dependencies (e.g. kaleido). Error: %s",
+                            file_name,
+                            image_ex,
+                        )
+            except Exception as ex:
+                logger.warning(
+                    "Could not save visualization '%s': %s",
+                    file_name,
+                    ex,
+                )
+
+    def _save_model(self) -> None:
+        """Persist fitted BERTopic model using the deterministic model id."""
+        try:
+            self.topic_model.save(self._saved_model_path)
+            self._log(f"Saved BERTopic model: {self._saved_model_path}")
+        except Exception as ex:
+            logger.warning("Could not save BERTopic model '%s': %s", self._saved_model_path, ex)
+
     def fit_transform(self):
         """Fit ``BERTopic`` on cached or fresh embeddings.
 
@@ -471,7 +456,11 @@ class BerTopicModelBuilder:
 
         # 2. create the bertopic model
         self._log("Initializing BERTopic model with configured UMAP and HDBSCAN.")
-        self.topic_model = BERTopic(umap_model=self.umap_model, hdbscan_model=self.hdbscan_model)
+        self.topic_model = BERTopic(
+            umap_model=self.umap_model, 
+            hdbscan_model=self.hdbscan_model,
+            verbose=self._verbose
+        )
 
         # fit the data susing the existing embeddings
         self._log("Fitting BERTopic model.")
@@ -481,6 +470,11 @@ class BerTopicModelBuilder:
         self._log(
             f"BERTopic fit complete. Found {n_topics} topics. Outlier assignments: {outliers}."
         )
+        self._log(f"Model id: {self.model_id}")
+        self._log("Saving BERTopic model.")
+        self._save_model()
+        self._log("Saving BERTopic visualizations.")
+        self._save_visualizations()
 
         self._log("Running BERTopic evaluator.")
         evaluator = BerTopicEvaluator(
@@ -490,6 +484,7 @@ class BerTopicModelBuilder:
             embeddings=self.embeddings,
             cache_dir=self._evaluation_cache_path,
             document_representation=self._ec.document_representation.value,
+            model_id=self.model_id,
         )
         self.evaluation_results = evaluator.evaluate()
         self.coherence_score = self.evaluation_results.get("coherence_c_v")
@@ -500,7 +495,11 @@ class BerTopicModelBuilder:
             results=self.evaluation_results,
             output_path=self._coherence_score_path,
             metadata={
+                "model_id": self.model_id,
                 "document_representation": self._ec.document_representation.value,
+                "embedding_config": asdict(self._ec),
+                "umap_config": asdict(self._umap_config),
+                "hdbscan_config": asdict(self._hdbscan_config),
             },
         )
         self._log(f"Saved evaluation results to {self._coherence_score_path}")

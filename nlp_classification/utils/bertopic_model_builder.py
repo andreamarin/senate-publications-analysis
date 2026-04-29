@@ -386,11 +386,11 @@ class BerTopicModelBuilder:
         image snapshots are best-effort and depend on Plotly export backends.
         """
         visualizations = [
-            (f"{self.model_id}_topics_pyldavis.html", self.topic_model.visualize_topics),
-            (f"{self.model_id}_heatmap.html", self.topic_model.visualize_heatmap),
-            (f"{self.model_id}_hierarchy.html", self.topic_model.visualize_hierarchy),
+            (f"topics_pyldavis.html", self.topic_model.visualize_topics),
+            (f"heatmap.html", self.topic_model.visualize_heatmap),
+            (f"hierarchy.html", self.topic_model.visualize_hierarchy),
             (
-                f"{self.model_id}_barchart_top20.html",
+                f"barchart_top20.html",
                 lambda: self.topic_model.visualize_barchart(top_n_topics=20),
             ),
         ]
@@ -440,7 +440,7 @@ class BerTopicModelBuilder:
             if not os.path.exists(os.path.join(self._visualizations_path, file_name))
         ]
         if missing_html:
-            raise RuntimeError(
+            logger.error(
                 "Missing BERTopic visualization artifacts after generation attempt: "
                 + ", ".join(missing_html)
             )

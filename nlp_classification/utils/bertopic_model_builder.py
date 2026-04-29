@@ -455,7 +455,7 @@ class BerTopicModelBuilder:
             in-memory model is initialized.
         """
 
-        if not force_compute and os.path.isdir(self._saved_model_path) and len(os.listdir(self._saved_model_path)) > 0:
+        if not force_compute and os.path.exists(self._saved_model_path):
             self.topic_model = BERTopic.load(self._saved_model_path)
             self._log(f"Loaded saved BERTopic model: {self._saved_model_path}")
             return True

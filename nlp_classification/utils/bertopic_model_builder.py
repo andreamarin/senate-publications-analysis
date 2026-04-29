@@ -164,7 +164,6 @@ class BerTopicModelBuilder:
         os.makedirs(self._runs_path, exist_ok=True)
         os.makedirs(self._cache_path, exist_ok=True)
         os.makedirs(self._run_path, exist_ok=True)
-        os.makedirs(self._saved_model_path, exist_ok=True)
         os.makedirs(self._visualizations_path, exist_ok=True)
         os.makedirs(self._embeddings_path, exist_ok=True)
         os.makedirs(self._chunks_path, exist_ok=True)

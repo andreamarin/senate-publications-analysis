@@ -67,7 +67,8 @@ def _plot_metric(df: pd.DataFrame, metric: str, output_dir: pathlib.Path) -> pat
 
     output_path = output_dir / f"compare_{metric}.png"
     fig.tight_layout()
-    fig.savefig(output_path, dpi=200, replace=True)
+    # Matplotlib overwrites existing files by default.
+    fig.savefig(output_path, dpi=200)
     plt.close(fig)
     return output_path
 

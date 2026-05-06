@@ -656,6 +656,11 @@ class BerTopicModelBuilder:
                 texts=self._texts,
                 topics=self.topics,
                 embeddings=self.embeddings,
+                doc_ids=(
+                    getattr(self, "_doc_ids", None)
+                    if self._ec.document_representation is DocumentRepresentation.CHUNKS
+                    else None
+                ),
                 cache_dir=self._evaluation_cache_path,
                 document_representation=self._ec.document_representation.value,
                 model_id=self.model_id,

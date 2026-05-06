@@ -80,6 +80,7 @@ class BerTopicEvaluator:
         texts: list[str],
         topics: np.ndarray,
         embeddings: np.ndarray,
+        doc_ids: np.ndarray | None = None,
         cache_dir: str | None = None,
         document_representation: str | None = None,
         model_id: str | None = None,
@@ -88,6 +89,7 @@ class BerTopicEvaluator:
         self._texts = texts
         self._topics = np.asarray(topics)
         self._embeddings = embeddings
+        self._doc_ids = None if doc_ids is None else np.asarray(doc_ids)
         self._cache_dir = cache_dir
         self._document_representation = document_representation
         self._model_id = model_id
@@ -112,6 +114,7 @@ class BerTopicEvaluator:
         tokenized_texts, dictionary, corpus = self._load_or_create_corpus_cache()
         topics_words = self._extract_topic_words(dictionary, top_n_words)
 
+        outliers_count, outliers_ratio, documents_count = self._compute_outlier_stats()
         metrics = {
             "coherence_c_v": self._compute_coherence(
                 topics_words=topics_words,
@@ -138,9 +141,9 @@ class BerTopicEvaluator:
             "topic_diversity": self._compute_topic_diversity(topics_words),
             "top_n_words": top_n_words,
             "topics_count": len(topics_words),
-            "outliers_count": int(np.sum(self._topics == -1)),
-            "outliers_ratio": float(np.mean(self._topics == -1)),
-            "documents_count": int(self._topics.shape[0]),
+            "outliers_count": outliers_count,
+            "outliers_ratio": outliers_ratio,
+            "documents_count": documents_count,
         }
 
         return metrics
@@ -241,6 +244,35 @@ class BerTopicEvaluator:
 
         unique_words = len({word for topic_words in topics_words for word in topic_words})
         return float(unique_words / total_words)
+
+    def _compute_outlier_stats(self) -> tuple[int, float, int]:
+        """Compute outlier count/ratio using chunk-aware document semantics.
+
+        In ``chunks`` mode, a document is considered outlier only when *all* of its
+        chunks are assigned to topic ``-1``.
+        """
+        if (
+            self._document_representation == "chunks"
+            and self._doc_ids is not None
+            and self._doc_ids.shape[0] == self._topics.shape[0]
+        ):
+            unique_doc_ids = np.unique(self._doc_ids)
+            outlier_docs = 0
+            for doc_id in unique_doc_ids:
+                doc_topics = self._topics[self._doc_ids == doc_id]
+                if doc_topics.size > 0 and np.all(doc_topics == -1):
+                    outlier_docs += 1
+
+            documents_count = int(unique_doc_ids.size)
+            if documents_count == 0:
+                return 0, 0.0, 0
+            return outlier_docs, float(outlier_docs / documents_count), documents_count
+
+        outliers_count = int(np.sum(self._topics == -1))
+        documents_count = int(self._topics.shape[0])
+        if documents_count == 0:
+            return 0, 0.0, 0
+        return outliers_count, float(outliers_count / documents_count), documents_count
 
     def _load_or_create_corpus_cache(
         self,

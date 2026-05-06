@@ -224,6 +224,13 @@ class BerTopicModelBuilder:
         list of str
             Chunk strings in order; may be empty if ``text`` yields no tokens.
         """
+        if text is None or (isinstance(text, float) and np.isnan(text)):
+            return []
+
+        text = str(text).strip()
+        if not text:
+            return []
+
         doc = nlp(text)
 
         chunks = []
@@ -232,10 +239,16 @@ class BerTopicModelBuilder:
 
         for sent in doc.sents:
             sent_text = sent.text.strip()
+            if not sent_text:
+                continue
             sent_len = len(sent_text.split())
+            if sent_len == 0:
+                continue
 
             if current_len + sent_len > self._ec.max_words and current_chunk:
-                chunks.append(" ".join(current_chunk))
+                chunk_text = " ".join(current_chunk).strip()
+                if chunk_text:
+                    chunks.append(chunk_text)
                 current_chunk = []
                 current_len = 0
 
@@ -243,7 +256,9 @@ class BerTopicModelBuilder:
             current_len += sent_len
 
         if current_chunk:
-            chunks.append(" ".join(current_chunk))
+            chunk_text = " ".join(current_chunk).strip()
+            if chunk_text:
+                chunks.append(chunk_text)
 
         return chunks
 
@@ -252,10 +267,24 @@ class BerTopicModelBuilder:
         chunks_full_path = os.path.join(self._chunks_path, self._ec.chunks_file)
         doc_ids_full_path = os.path.join(self._chunks_path, self._ec.doc_ids_file)
 
+        def _sanitize_chunks_and_ids(chunk_texts, doc_ids):
+            cleaned_chunks = []
+            cleaned_doc_ids = []
+            for chunk, doc_id in zip(chunk_texts, doc_ids):
+                if chunk is None:
+                    continue
+                chunk_text = str(chunk).strip()
+                if not chunk_text:
+                    continue
+                cleaned_chunks.append(chunk_text)
+                cleaned_doc_ids.append(doc_id)
+            return cleaned_chunks, np.asarray(cleaned_doc_ids, dtype=np.int64)
+
         if os.path.exists(chunks_full_path) and os.path.exists(doc_ids_full_path):
             self._log("Loading chunk cache from disk.")
-            self._texts = pd.read_pickle(chunks_full_path)
-            self._doc_ids = np.load(doc_ids_full_path)
+            cached_chunks = pd.read_pickle(chunks_full_path)
+            cached_doc_ids = np.load(doc_ids_full_path)
+            self._texts, self._doc_ids = _sanitize_chunks_and_ids(cached_chunks, cached_doc_ids)
             self._log(f"Loaded {len(self._texts)} chunks.")
         else:
             self._log("Chunk cache not found. Building chunks with spaCy.")
@@ -271,8 +300,7 @@ class BerTopicModelBuilder:
                 chunk_texts.extend(chunks)
                 doc_ids.extend([doc_id] * len(chunks))
 
-            self._texts = chunk_texts
-            self._doc_ids = np.asarray(doc_ids, dtype=np.int64)
+            self._texts, self._doc_ids = _sanitize_chunks_and_ids(chunk_texts, doc_ids)
             self._log(f"Created {len(self._texts)} chunks from {len(self._document_texts)} documents.")
 
             pd.to_pickle(self._texts, chunks_full_path)

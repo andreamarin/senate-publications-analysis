@@ -8,11 +8,18 @@ import numpy as np
 import pandas as pd
 from umap import UMAP
 from dataclasses import asdict
+from typing import Optional
 from hdbscan import HDBSCAN
 from bertopic import BERTopic
 from sentence_transformers import SentenceTransformer
 
-from .bertopic_config import EmbeddingConfig, UMAPConfig, HDBSCANConfig, DocumentRepresentation
+from .bertopic_config import (
+    EmbeddingConfig,
+    UMAPConfig,
+    HDBSCANConfig,
+    DocumentRepresentation,
+    ComputeConfig,
+)
 from .bertopic_evaluator import BerTopicEvaluator
 
 logger = logging.getLogger(__name__)
@@ -110,7 +117,8 @@ class BerTopicModelBuilder:
         umap_config: UMAPConfig,
         hdbscan_config: HDBSCANConfig,
         verbose: bool = False,
-        base_path: str = None
+        base_path: str = None,
+        compute_config: Optional[ComputeConfig] = None,
     ):
         self._document_texts = texts_df[text_column].tolist()
         self._verbose = verbose
@@ -121,6 +129,7 @@ class BerTopicModelBuilder:
         self._ec = embedding_config
         self._umap_config = umap_config
         self._hdbscan_config = hdbscan_config
+        self._compute_config = compute_config or ComputeConfig()
         self.model_id = self._build_model_id()
 
         current_path = pathlib.Path(__file__).parent.resolve()
@@ -280,14 +289,19 @@ class BerTopicModelBuilder:
                 cleaned_doc_ids.append(doc_id)
             return cleaned_chunks, np.asarray(cleaned_doc_ids, dtype=np.int64)
 
-        if os.path.exists(chunks_full_path) and os.path.exists(doc_ids_full_path):
+        force_compute = self._compute_config.force_chunks
+
+        if os.path.exists(chunks_full_path) and os.path.exists(doc_ids_full_path) and not force_compute:
             self._log("Loading chunk cache from disk.")
             cached_chunks = pd.read_pickle(chunks_full_path)
             cached_doc_ids = np.load(doc_ids_full_path)
             self._texts, self._doc_ids = _sanitize_chunks_and_ids(cached_chunks, cached_doc_ids)
             self._log(f"Loaded {len(self._texts)} chunks.")
         else:
-            self._log("Chunk cache not found. Building chunks with spaCy.")
+            if force_compute:
+                self._log("force_compute=True, recomputing chunks.")
+            else:
+                self._log("Chunk cache not found. Building chunks with spaCy.")
             chunk_texts = []
             doc_ids = []
 
@@ -350,8 +364,9 @@ class BerTopicModelBuilder:
         ``CHUNKS`` so ``self._texts`` matches the matrix width.
         """
         embeddings_file_path = os.path.join(self._embeddings_path, self._ec.embeddings_file)
+        force_compute = self._compute_config.force_embeddings
 
-        if os.path.exists(embeddings_file_path) and not self._ec.force_compute:
+        if os.path.exists(embeddings_file_path) and not force_compute:
             self._log(f"Loading embeddings cache: {self._ec.embeddings_file}")
             self.embeddings = np.load(embeddings_file_path)
             self._log(f"Embeddings loaded with shape {self.embeddings.shape}.")
@@ -365,7 +380,7 @@ class BerTopicModelBuilder:
 
             return
         
-        if self._ec.force_compute:
+        if force_compute:
             self._log("force_compute=True, recomputing embeddings.")
         else:
             self._log("Embeddings cache not found. Computing embeddings.")
@@ -422,6 +437,7 @@ class BerTopicModelBuilder:
                 lambda: self.topic_model.visualize_barchart(top_n_topics=20),
             ),
         ]
+        force_compute = self._compute_config.force_visualizations
 
         for file_name, visualize_fn in visualizations:
             output_path = os.path.join(self._visualizations_path, file_name)
@@ -430,17 +446,17 @@ class BerTopicModelBuilder:
             has_html = os.path.exists(output_path)
             has_snapshot = os.path.exists(png_path) or os.path.exists(jpg_path)
 
-            if has_html and has_snapshot:
+            if has_html and has_snapshot and not force_compute:
                 self._log(f"Skipping existing visualization and snapshot: {output_path}")
                 continue
 
             try:
                 fig = visualize_fn()
-                if not has_html:
+                if not has_html or force_compute:
                     fig.write_html(output_path)
                     self._log(f"Saved visualization: {output_path}")
 
-                if not has_snapshot:
+                if not has_snapshot or force_compute:
                     try:
                         fig.write_image(png_path)
                         self._log(f"Saved visualization snapshot: {png_path}")
@@ -530,6 +546,10 @@ class BerTopicModelBuilder:
 
     def _load_saved_evaluation_results(self) -> bool:
         """Load evaluator results from disk into instance attributes."""
+        if self._compute_config.force_evaluation:
+            self._log("force_compute=True, ignoring cached evaluation results.")
+            return False
+
         if not os.path.exists(self._evaluation_metrics_path):
             return False
 
@@ -591,15 +611,21 @@ class BerTopicModelBuilder:
             Per-document (or per-chunk) topic probabilities when available.
         """
         self._log("Starting fit_transform.")
+        if self._compute_config.force_compute_all:
+            self._log("Global force_compute enabled. Recomputing all pipeline artifacts.")
         
         self._load_embeddings()
         self._log(
             f"Prepared {len(self._texts)} texts and embeddings with shape {self.embeddings.shape}."
         )
 
-        model_loaded = self._load_model()
+        model_loaded = self._load_model(
+            force_compute=self._compute_config.force_model
+        )
 
-        outputs_loaded = self._fit_transform_model()
+        outputs_loaded = self._fit_transform_model(
+            force_compute=self._compute_config.force_topics_probs
+        )
         if outputs_loaded and not model_loaded:
             # Topics/probs cache without a fitted BERTopic model is inconsistent.
             # Refit once so the builder always ends with a working topic_model.

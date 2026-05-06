@@ -2,7 +2,13 @@ from .bertopic_model_builder import BerTopicModelBuilder
 from .bertopic_evaluator import BerTopicEvaluator
 from .nlp_processor import NlpProcessor
 from .lda_model_builder import LDAModelBuilder
-from .bertopic_config import EmbeddingConfig, UMAPConfig, HDBSCANConfig, DocumentRepresentation
+from .bertopic_config import (
+    EmbeddingConfig,
+    UMAPConfig,
+    HDBSCANConfig,
+    DocumentRepresentation,
+    ComputeConfig,
+)
 from .bertopic_results_comparator import generate_metrics_comparison_graphs
 
 __all__ = [
@@ -11,6 +17,7 @@ __all__ = [
     "UMAPConfig",
     "HDBSCANConfig",
     "DocumentRepresentation",
+    "ComputeConfig",
     "BerTopicEvaluator",
     "NlpProcessor",
     "LDAModelBuilder",

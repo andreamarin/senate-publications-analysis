@@ -1,6 +1,5 @@
 import os
 import json
-import hashlib
 import logging
 import spacy
 import pathlib
@@ -190,8 +189,6 @@ class BerTopicModelBuilder:
             "umap_config": asdict(self._umap_config),
             "hdbscan_config": asdict(self._hdbscan_config),
         }
-        payload_str = json.dumps(payload, sort_keys=True, default=str)
-        hash_suffix = hashlib.sha256(payload_str.encode("utf-8")).hexdigest()[:8]
 
         embedding_model_slug = str(self._ec.embedding_model).replace("\\", "/").split("/")[-1]
         embedding_model_slug = (
@@ -216,7 +213,7 @@ class BerTopicModelBuilder:
         )
         # Keep file/folder names manageable while still readable.
         readable_prefix = readable_prefix[:120]
-        return f"{readable_prefix}__{hash_suffix}"
+        return readable_prefix
         
     def _sentence_chunking(self, text, nlp):
         """Split ``text`` into sentence-based chunks up to ``max_words`` each.

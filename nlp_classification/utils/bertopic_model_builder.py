@@ -531,9 +531,15 @@ class BerTopicModelBuilder:
                 prediction_data=self._hdbscan_config.prediction_data,
             )
 
+            calculate_probabilities = (
+                self._outlier_reduction_config.enabled
+                and self._outlier_reduction_config.requires_probabilities()
+            )
+
             self.topic_model = BERTopic(
                 umap_model=umap_model,
                 hdbscan_model=hdbscan_model,
+                calculate_probabilities=calculate_probabilities,
                 verbose=self._verbose,
             )
             return False
@@ -628,6 +634,8 @@ class BerTopicModelBuilder:
                 )
                 return
             kwargs["probabilities"] = self.probs
+        elif config.strategy is OutlierReductionStrategy.DISTRIBUTIONS:
+            kwargs["distributions_params"] = config.distributions_params
 
         self._log(
             f"Reducing outliers with strategy={config.strategy.value}, "

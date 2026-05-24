@@ -1,6 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Union
+from typing import Any, Union
 
 
 class DocumentRepresentation(str, Enum):
@@ -51,18 +51,21 @@ class OutlierReductionConfig:
     """Configuration for reassigning HDBSCAN outlier documents (topic ``-1``).
 
     When ``enabled`` is True, :meth:`BerTopicModelBuilder.fit_transform` calls
-    :meth:`~bertopic.BERTopic.reduce_outliers` after the initial fit and refreshes
-    topic assignments before evaluation and caching.
+    :meth:`~bertopic.BERTopic.reduce_outliers` once with ``strategy`` and
+    ``threshold``, then refreshes topic assignments.
 
     Notes
     -----
-    * ``PROBABILITIES`` requires ``HDBSCANConfig.prediction_data=True``.
+    * ``PROBABILITIES`` requires ``HDBSCANConfig.prediction_data=True`` and
+      ``calculate_probabilities=True`` on BERTopic (set automatically by the builder).
     * ``EMBEDDINGS`` reuses the embedding matrix already computed by the builder.
+    * ``DISTRIBUTIONS`` accepts extra kwargs via ``distributions_params``.
     """
 
     enabled: bool = False
     strategy: Union[OutlierReductionStrategy, str] = OutlierReductionStrategy.CTFIDF
     threshold: float = 0.0
+    distributions_params: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if isinstance(self.strategy, str):
@@ -70,6 +73,10 @@ class OutlierReductionConfig:
                 self.strategy = OutlierReductionStrategy(self.strategy)
             except ValueError:
                 self.strategy = OutlierReductionStrategy.CTFIDF
+
+    def requires_probabilities(self) -> bool:
+        """Whether BERTopic must compute per-topic probabilities at fit time."""
+        return self.strategy is OutlierReductionStrategy.PROBABILITIES
 
 
 @dataclass

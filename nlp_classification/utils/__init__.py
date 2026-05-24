@@ -8,6 +8,8 @@ from .bertopic_config import (
     HDBSCANConfig,
     DocumentRepresentation,
     ComputeConfig,
+    OutlierReductionConfig,
+    OutlierReductionStrategy,
 )
 from .bertopic_results_comparator import generate_metrics_comparison_graphs
 
@@ -18,6 +20,8 @@ __all__ = [
     "HDBSCANConfig",
     "DocumentRepresentation",
     "ComputeConfig",
+    "OutlierReductionConfig",
+    "OutlierReductionStrategy",
     "BerTopicEvaluator",
     "NlpProcessor",
     "LDAModelBuilder",

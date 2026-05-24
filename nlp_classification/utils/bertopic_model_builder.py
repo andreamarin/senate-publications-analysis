@@ -18,6 +18,8 @@ from .bertopic_config import (
     HDBSCANConfig,
     DocumentRepresentation,
     ComputeConfig,
+    OutlierReductionConfig,
+    OutlierReductionStrategy,
 )
 from .bertopic_evaluator import BerTopicEvaluator
 
@@ -79,6 +81,11 @@ class BerTopicModelBuilder:
         If True, show encoding progress from ``SentenceTransformer``.
     base_path : str, default=None
         Base path for model storage. If not provided, uses the package root.
+    compute_config : ComputeConfig, optional
+        Per-step cache bypass flags.
+    outlier_reduction_config : OutlierReductionConfig, optional
+        When enabled, reassigns HDBSCAN outlier documents (topic ``-1``) after
+        the initial fit using :meth:`~bertopic.BERTopic.reduce_outliers`.
 
     Attributes
     ----------
@@ -118,6 +125,7 @@ class BerTopicModelBuilder:
         verbose: bool = False,
         base_path: str = None,
         compute_config: Optional[ComputeConfig] = None,
+        outlier_reduction_config: Optional[OutlierReductionConfig] = None,
     ):
         self._document_texts = texts_df[text_column].tolist()
         self._verbose = verbose
@@ -128,6 +136,7 @@ class BerTopicModelBuilder:
         self._ec = embedding_config
         self._umap_config = umap_config
         self._hdbscan_config = hdbscan_config
+        self._outlier_reduction_config = outlier_reduction_config or OutlierReductionConfig()
         self._compute_config = compute_config or ComputeConfig()
         self.model_id = self._build_model_id()
 
@@ -188,6 +197,7 @@ class BerTopicModelBuilder:
             "embedding_config": asdict(self._ec),
             "umap_config": asdict(self._umap_config),
             "hdbscan_config": asdict(self._hdbscan_config),
+            "outlier_reduction_config": asdict(self._outlier_reduction_config),
         }
 
         embedding_model_slug = str(self._ec.embedding_model).replace("\\", "/").split("/")[-1]
@@ -211,6 +221,10 @@ class BerTopicModelBuilder:
             f"__umap_n{umap_neighbors}_c{umap_components}"
             f"__hdb_mcs{hdbscan_min_cluster}"
         )
+        if self._outlier_reduction_config.enabled:
+            strategy_slug = self._outlier_reduction_config.strategy.value.replace("-", "")
+            threshold_slug = str(self._outlier_reduction_config.threshold).replace(".", "p")
+            readable_prefix += f"__or_{strategy_slug}_t{threshold_slug}"
         # Keep file/folder names manageable while still readable.
         readable_prefix = readable_prefix[:120]
         return readable_prefix
@@ -514,7 +528,7 @@ class BerTopicModelBuilder:
             hdbscan_model = HDBSCAN(
                 min_cluster_size=self._hdbscan_config.min_cluster_size,
                 metric=self._hdbscan_config.metric,
-                prediction_data=False,
+                prediction_data=self._hdbscan_config.prediction_data,
             )
 
             self.topic_model = BERTopic(
@@ -586,6 +600,55 @@ class BerTopicModelBuilder:
             self._save_model()
             return False
 
+    def _reduce_outliers(self) -> None:
+        """Reassign topic ``-1`` documents using BERTopic's reduce_outliers."""
+        config = self._outlier_reduction_config
+        if not config.enabled:
+            return
+
+        topics_array = np.asarray(self.topics)
+        outliers_before = int(np.sum(topics_array == -1))
+        if outliers_before == 0:
+            self._log("Outlier reduction enabled but no outlier assignments found.")
+            return
+
+        kwargs = {
+            "documents": self._texts,
+            "topics": topics_array.tolist(),
+            "strategy": config.strategy.value,
+            "threshold": config.threshold,
+        }
+        if config.strategy is OutlierReductionStrategy.EMBEDDINGS:
+            kwargs["embeddings"] = self.embeddings
+        elif config.strategy is OutlierReductionStrategy.PROBABILITIES:
+            if self.probs is None:
+                logger.warning(
+                    "Outlier reduction strategy 'probabilities' requires topic "
+                    "probabilities; skipping reduction."
+                )
+                return
+            kwargs["probabilities"] = self.probs
+
+        self._log(
+            f"Reducing outliers with strategy={config.strategy.value}, "
+            f"threshold={config.threshold}. "
+            f"Outlier assignments before reduction: {outliers_before}."
+        )
+        new_topics = self.topic_model.reduce_outliers(**kwargs)
+        self.topics = np.asarray(new_topics)
+
+        outliers_after = int(np.sum(self.topics == -1))
+        reassigned = outliers_before - outliers_after
+        self._log(
+            f"Outlier reduction complete. Reassigned {reassigned} assignments; "
+            f"outliers remaining: {outliers_after}."
+        )
+
+        if reassigned > 0:
+            self.topic_model.update_topics(self._texts, topics=self.topics.tolist())
+            self._save_topics_probs()
+            self._save_model()
+
     def fit_transform(self):
         """Execute BERTopic pipeline with cache-first semantics.
 
@@ -636,6 +699,7 @@ class BerTopicModelBuilder:
             self._log("Model cache hit but topics/probs cache missing. Recomputed fit outputs.")
             self._fit_transform_model(force_compute=True)
 
+        self._reduce_outliers()
 
         if self.topic_model is None or self.topics is None:
             raise RuntimeError("BERTopic fit did not produce a usable topic model and topic assignments.")
@@ -676,6 +740,7 @@ class BerTopicModelBuilder:
                     "embedding_config": asdict(self._ec),
                     "umap_config": asdict(self._umap_config),
                     "hdbscan_config": asdict(self._hdbscan_config),
+                    "outlier_reduction_config": asdict(self._outlier_reduction_config),
                 },
             )
             self._log(f"Saved evaluation results to {self._evaluation_metrics_path}")

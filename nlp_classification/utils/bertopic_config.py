@@ -34,6 +34,42 @@ class HDBSCANConfig:
 
     min_cluster_size: int
     metric: str = "euclidean"
+    prediction_data: bool = False
+
+
+class OutlierReductionStrategy(str, Enum):
+    """Strategy passed to :meth:`bertopic.BERTopic.reduce_outliers`."""
+
+    CTFIDF = "c-tf-idf"
+    EMBEDDINGS = "embeddings"
+    DISTRIBUTIONS = "distributions"
+    PROBABILITIES = "probabilities"
+
+
+@dataclass
+class OutlierReductionConfig:
+    """Configuration for reassigning HDBSCAN outlier documents (topic ``-1``).
+
+    When ``enabled`` is True, :meth:`BerTopicModelBuilder.fit_transform` calls
+    :meth:`~bertopic.BERTopic.reduce_outliers` after the initial fit and refreshes
+    topic assignments before evaluation and caching.
+
+    Notes
+    -----
+    * ``PROBABILITIES`` requires ``HDBSCANConfig.prediction_data=True``.
+    * ``EMBEDDINGS`` reuses the embedding matrix already computed by the builder.
+    """
+
+    enabled: bool = False
+    strategy: Union[OutlierReductionStrategy, str] = OutlierReductionStrategy.CTFIDF
+    threshold: float = 0.0
+
+    def __post_init__(self) -> None:
+        if isinstance(self.strategy, str):
+            try:
+                self.strategy = OutlierReductionStrategy(self.strategy)
+            except ValueError:
+                self.strategy = OutlierReductionStrategy.CTFIDF
 
 
 @dataclass

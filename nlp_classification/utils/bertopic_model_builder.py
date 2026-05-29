@@ -593,7 +593,11 @@ class BerTopicModelBuilder:
             return False
 
     def _fit_transform_model(self, force_compute: bool=False) -> bool:
-        """Load cached BERTopic outputs, or fit and cache them.
+        """Load cached BERTopic outputs, or fit and optionally cache them.
+
+        When outlier reduction is enabled, a fresh fit does **not** persist
+        topics/probs/model here; :meth:`fit_transform` saves once after
+        reduction. Cached topics/probs are always post-reduction assignments.
 
         Returns
         -------
@@ -609,8 +613,6 @@ class BerTopicModelBuilder:
         else:
             self._log("Fitting BERTopic model.")
             self.topics, self.probs = self.topic_model.fit_transform(self._texts, self.embeddings)
-            self._save_topics_probs()
-            self._save_model()
             return False
 
     def _reduce_outliers(self) -> None:
@@ -661,8 +663,6 @@ class BerTopicModelBuilder:
 
         if reassigned > 0:
             self.topic_model.update_topics(self._texts, topics=self.topics.tolist())
-            self._save_topics_probs()
-            self._save_model()
 
     def fit_transform(self):
         """Execute BERTopic pipeline with cache-first semantics.
@@ -671,6 +671,10 @@ class BerTopicModelBuilder:
         1) embeddings/chunks, 2) fitted BERTopic model, 3) topics/probs,
         4) visualizations, 5) evaluation metrics.
         Missing artifacts are computed and persisted.
+
+        When outlier reduction is enabled, cached topics/probs represent
+        post-reduction assignments and reduction is skipped on cache hit.
+        A fresh run persists topics/probs/model once after reduction completes.
 
         After this method returns, the builder guarantees:
         - ``topic_model`` is available and usable
@@ -709,12 +713,16 @@ class BerTopicModelBuilder:
                 "Refitting BERTopic to rebuild model artifact."
             )
             self._load_model(force_compute=True)
-            self._fit_transform_model(force_compute=True)
+            outputs_loaded = self._fit_transform_model(force_compute=True)
         elif model_loaded and not outputs_loaded:
             self._log("Model cache hit but topics/probs cache missing. Recomputed fit outputs.")
-            self._fit_transform_model(force_compute=True)
+            outputs_loaded = self._fit_transform_model(force_compute=True)
 
-        self._reduce_outliers()
+        if not outputs_loaded:
+            if self._outlier_reduction_config.enabled:
+                self._reduce_outliers()
+            self._save_topics_probs()
+            self._save_model()
 
         if self.topic_model is None or self.topics is None:
             raise RuntimeError("BERTopic fit did not produce a usable topic model and topic assignments.")

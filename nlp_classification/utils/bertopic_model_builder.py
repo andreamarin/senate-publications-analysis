@@ -6,10 +6,11 @@ import pathlib
 import numpy as np
 import pandas as pd
 from umap import UMAP
-from dataclasses import asdict
 from typing import Optional
 from hdbscan import HDBSCAN
 from bertopic import BERTopic
+from dataclasses import asdict
+from scipy.cluster import hierarchy as sch
 from sentence_transformers import SentenceTransformer
 
 from .bertopic_config import (
@@ -165,6 +166,10 @@ class BerTopicModelBuilder:
         )
         self._topics_path = os.path.join(self._run_path, "topics.npy")
         self._probs_path = os.path.join(self._run_path, "probs.npy")
+        self._hierarchical_topics_path = os.path.join(
+            self._run_path,
+            "hierarchical_topics",
+        )
 
         self._init_folders()
 
@@ -174,6 +179,7 @@ class BerTopicModelBuilder:
         self.embeddings = None
         self.coherence_score = None
         self.evaluation_results = None
+        self.hierarchical_topics = dict()
 
     def _init_folders(self) -> None:
         """Create all run and cache directories required for cache-first flow."""
@@ -185,6 +191,7 @@ class BerTopicModelBuilder:
         os.makedirs(self._embeddings_path, exist_ok=True)
         os.makedirs(self._chunks_path, exist_ok=True)
         os.makedirs(self._evaluation_cache_path, exist_ok=True)
+        os.makedirs(self._hierarchical_topics_path, exist_ok=True)
 
     def _log(self, message: str) -> None:
         """Emit progress messages only when verbose mode is enabled."""
@@ -760,3 +767,107 @@ class BerTopicModelBuilder:
         self._log(
             f"Evaluation complete. coherence_c_v={self.coherence_score}"
         )
+
+    def _hierarchical_topics_cache_file(self, linkage_method: str) -> str:
+        """Return the on-disk cache path for a linkage method."""
+        safe_method = linkage_method.replace(os.sep, "_")
+        return os.path.join(
+            self._hierarchical_topics_path,
+            f"hierarchical_topics_{safe_method}.pkl",
+        )
+
+    def _load_hierarchical_topics_cache(
+        self, linkage_method: str
+    ) -> pd.DataFrame | None:
+        """Load cached hierarchical topics for ``linkage_method``, if present."""
+        cache_file = self._hierarchical_topics_cache_file(linkage_method)
+        if not os.path.exists(cache_file):
+            return None
+
+        try:
+            result = pd.read_pickle(cache_file)
+            self._log(
+                f"Loaded cached hierarchical topics ({linkage_method}): {cache_file}"
+            )
+            return result
+        except Exception as ex:
+            logger.warning(
+                "Could not load hierarchical topics cache '%s': %s",
+                cache_file,
+                ex,
+            )
+            return None
+
+    def _save_hierarchical_topics_cache(
+        self, linkage_method: str, result: pd.DataFrame
+    ) -> None:
+        """Persist hierarchical topics for ``linkage_method`` to disk."""
+        cache_file = self._hierarchical_topics_cache_file(linkage_method)
+        try:
+            pd.to_pickle(result, cache_file)
+            self._log(
+                f"Saved hierarchical topics cache ({linkage_method}): {cache_file}"
+            )
+        except Exception as ex:
+            logger.warning(
+                "Could not save hierarchical topics cache '%s': %s",
+                cache_file,
+                ex,
+            )
+
+    def get_hierarchical_topic(self, linkage_method: str = "ward", force_compute: bool = False):
+        """Create or load hierarchical topics for the fitted model.
+
+        Lookup order:
+        1) in-memory cache on ``self.hierarchical_topics``
+        2) on-disk pickle under ``runs/<model_id>/hierarchical_topics/``
+        3) BERTopic ``hierarchical_topics`` computation
+
+        Parameters
+        ----------
+        linkage_method : str, default="ward"
+            SciPy linkage method passed to hierarchical clustering.
+        force_compute : bool, default=False
+            When True, bypass in-memory and on-disk caches and recompute.
+        """
+        if self.topic_model is None:
+            raise RuntimeError(
+                "Call fit_transform before computing hierarchical topics."
+            )
+
+        force_compute = force_compute or self._compute_config.force_compute_all
+
+        if linkage_method in self.hierarchical_topics and not force_compute:
+            return self.hierarchical_topics[linkage_method]
+
+        if not force_compute:
+            cached = self._load_hierarchical_topics_cache(linkage_method)
+            if cached is not None:
+                self.hierarchical_topics[linkage_method] = cached
+                return cached
+
+        if force_compute and linkage_method in self.hierarchical_topics:
+            self._log(
+                f"force_compute=True, recomputing hierarchical topics ({linkage_method})."
+            )
+        else:
+            self._log(f"Computing hierarchical topics ({linkage_method}).")
+
+        if linkage_method == "ward":
+            # ward is the default method, we don't need a lambda function
+            result = self.topic_model.hierarchical_topics(self._texts)
+        else:
+            # use provided linkage function
+            linkage_function = lambda x: sch.linkage(
+                x, linkage_method, optimal_ordering=True
+            )
+            result = self.topic_model.hierarchical_topics(
+                self._texts,
+                linkage_function=linkage_function,
+            )
+
+        # save in dict
+        self.hierarchical_topics[linkage_method] = result
+        self._save_hierarchical_topics_cache(linkage_method, result)
+
+        return result

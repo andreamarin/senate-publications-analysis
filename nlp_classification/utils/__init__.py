@@ -12,6 +12,13 @@ from .bertopic_config import (
     OutlierReductionStrategy,
 )
 from .bertopic_results_comparator import generate_metrics_comparison_graphs
+from .hierarchy_merge_parser import (
+    MergeTopicGroup,
+    build_merge_groups_from_tree,
+    build_merge_topic_list_from_file,
+    build_merge_topic_list_from_tree,
+    print_merge_topic_list,
+)
 
 __all__ = [
     "BerTopicModelBuilder",
@@ -25,5 +32,10 @@ __all__ = [
     "BerTopicEvaluator",
     "NlpProcessor",
     "LDAModelBuilder",
-    "generate_metrics_comparison_graphs"
+    "generate_metrics_comparison_graphs",
+    "MergeTopicGroup",
+    "build_merge_groups_from_tree",
+    "build_merge_topic_list_from_file",
+    "build_merge_topic_list_from_tree",
+    "print_merge_topic_list",
 ]

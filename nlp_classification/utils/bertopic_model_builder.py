@@ -879,3 +879,11 @@ class BerTopicModelBuilder:
         self._save_hierarchical_topics_cache(linkage_method, result)
 
         return result
+
+    def merge_topics(self, merge_topic_list: list[list[int]]):
+
+        # apply the merge topic list
+        self.topic_model.merge_topics(self._texts, merge_topic_list)
+
+        # save new model
+        self._save_model()

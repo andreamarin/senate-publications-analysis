@@ -303,15 +303,14 @@ class BerTopicModelBuilder:
             self.probs = np.load(self._probs_path, allow_pickle=True)
 
     def _copy_saved_model_to(self, dest_model_path: str) -> None:
-        """Copy the on-disk BERTopic model directory to ``dest_model_path``."""
+        """Copy the on-disk BERTopic model file to ``dest_model_path``."""
         if not os.path.exists(self._saved_model_path):
             raise RuntimeError(
                 f"Saved model not found at '{self._saved_model_path}'. "
                 "Call fit_transform first."
             )
-        if os.path.exists(dest_model_path):
-            shutil.rmtree(dest_model_path)
-        shutil.copytree(self._saved_model_path, dest_model_path)
+        shutil.copy(self._saved_model_path, dest_model_path)
+
 
     def _persist_variant(
         self,

@@ -1,6 +1,7 @@
-from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Union
+from nltk.corpus import stopwords
+from dataclasses import dataclass, field
 
 
 class DocumentRepresentation(str, Enum):
@@ -106,6 +107,21 @@ class EmbeddingConfig:
             self.doc_ids_file = f"doc_ids_{self.max_words}.npy"
         else:
             self.embeddings_file = f"embeddings_{self.document_representation.value}.npy"
+
+
+@dataclass
+class CountVectorizerConfig:
+    """Configuration for the CountVectorizer step"""
+    strip_accents: str = None
+    extra_stop_words: list[str] = []
+    lowercase: bool = False
+    min_df: int = 10
+    ngram_range: tuple = (1,1)
+
+    def __post_init__(self) -> None:
+        self.stop_words = stopwords.words('spanish')
+        self.stop_words.extend(self.extra_stop_words)
+
 
 
 @dataclass

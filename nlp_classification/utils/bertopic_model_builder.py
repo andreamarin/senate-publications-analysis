@@ -12,6 +12,7 @@ from bertopic import BERTopic
 from dataclasses import asdict
 from scipy.cluster import hierarchy as sch
 from sentence_transformers import SentenceTransformer
+from sklearn.feature_extraction.text import CountVectorizer
 
 from .bertopic_config import (
     EmbeddingConfig,
@@ -21,6 +22,7 @@ from .bertopic_config import (
     ComputeConfig,
     OutlierReductionConfig,
     OutlierReductionStrategy,
+    CountVectorizerConfig,
 )
 from .bertopic_evaluator import BerTopicEvaluator
 
@@ -123,6 +125,7 @@ class BerTopicModelBuilder:
         embedding_config: EmbeddingConfig,
         umap_config: UMAPConfig,
         hdbscan_config: HDBSCANConfig,
+        countvectorizer_config: CountVectorizerConfig,
         verbose: bool = False,
         base_path: str = None,
         compute_config: Optional[ComputeConfig] = None,
@@ -137,6 +140,7 @@ class BerTopicModelBuilder:
         self._ec = embedding_config
         self._umap_config = umap_config
         self._hdbscan_config = hdbscan_config
+        self._countvectorizer_config = countvectorizer_config
         self._outlier_reduction_config = outlier_reduction_config or OutlierReductionConfig()
         self._compute_config = compute_config or ComputeConfig()
         self.model_id = self._build_model_id()
@@ -543,9 +547,18 @@ class BerTopicModelBuilder:
                 and self._outlier_reduction_config.requires_probabilities()
             )
 
+            countvectorizer_model = CountVectorizer(
+                strip_accents=self._countvectorizer_config.strip_accents,
+                lowercase=self._countvectorizer_config.lowercase,
+                stop_words=self._countvectorizer_config.stop_words,
+                min_df=self._countvectorizer_config.min_df,
+                ngram_range=self._countvectorizer_config.ngram_range
+            )
+
             self.topic_model = BERTopic(
                 umap_model=umap_model,
                 hdbscan_model=hdbscan_model,
+                vectorizer_model=countvectorizer_model,
                 calculate_probabilities=calculate_probabilities,
                 verbose=self._verbose,
             )

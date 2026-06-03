@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import shutil
 import spacy
 import pathlib
 import numpy as np
@@ -89,6 +90,11 @@ class BerTopicModelBuilder:
     outlier_reduction_config : OutlierReductionConfig, optional
         When enabled, reassigns HDBSCAN outlier documents (topic ``-1``) after
         the initial fit using :meth:`~bertopic.BERTopic.reduce_outliers`.
+    load_merged : bool, default=False
+        When True, load and persist artifacts under ``{model_id}__merged``.
+    run_suffix : str, default=""
+        Additional suffix appended after ``load_merged`` (e.g. outlier-reduction
+        variant from :meth:`compute_or_suffix`).
 
     Attributes
     ----------
@@ -130,8 +136,12 @@ class BerTopicModelBuilder:
         base_path: str = None,
         compute_config: Optional[ComputeConfig] = None,
         outlier_reduction_config: Optional[OutlierReductionConfig] = None,
+        load_merged: bool = False,
+        run_suffix: str = "",
     ):
         self._document_texts = texts_df[text_column].tolist()
+        self._text_column = text_column
+        self._folder_name = folder_name
         self._verbose = verbose
         if self._verbose:
             setup_builder_logging()
@@ -143,10 +153,18 @@ class BerTopicModelBuilder:
         self._countvectorizer_config = countvectorizer_config
         self._outlier_reduction_config = outlier_reduction_config or OutlierReductionConfig()
         self._compute_config = compute_config or ComputeConfig()
+        self._load_merged = load_merged
+        self._run_suffix = run_suffix
+
         self.model_id = self._build_model_id()
+        if load_merged:
+            self.model_id += "__merged"
+        if run_suffix:
+            self.model_id += run_suffix
 
         current_path = pathlib.Path(__file__).parent.resolve()
         base_path = current_path.parent.resolve() if base_path is None else base_path
+        self._resolved_base_path = str(base_path)
 
         self._base_output_path = f"{base_path}/{folder_name}"
         self._runs_path = f"{self._base_output_path}/runs"
@@ -239,7 +257,106 @@ class BerTopicModelBuilder:
         # Keep file/folder names manageable while still readable.
         readable_prefix = readable_prefix[:120]
         return readable_prefix
-        
+
+    @staticmethod
+    def compute_or_suffix(config: OutlierReductionConfig) -> str:
+        """Return the run-directory suffix for an outlier-reduction variant."""
+        strategy_slug = config.strategy.value.replace("-", "")
+        threshold_slug = str(config.threshold).replace(".", "p")
+        return f"__or_{strategy_slug}_t{threshold_slug}"
+
+    def _clone_builder(
+        self,
+        load_merged: Optional[bool] = None,
+        run_suffix: Optional[str] = None,
+    ) -> "BerTopicModelBuilder":
+        """Create a new builder sharing configs but pointing at another run path."""
+        texts_df = pd.DataFrame({self._text_column: self._document_texts})
+        return BerTopicModelBuilder(
+            texts_df=texts_df,
+            text_column=self._text_column,
+            folder_name=self._folder_name,
+            embedding_config=self._ec,
+            umap_config=self._umap_config,
+            hdbscan_config=self._hdbscan_config,
+            countvectorizer_config=self._countvectorizer_config,
+            verbose=self._verbose,
+            base_path=self._resolved_base_path,
+            compute_config=self._compute_config,
+            outlier_reduction_config=self._outlier_reduction_config,
+            load_merged=self._load_merged if load_merged is None else load_merged,
+            run_suffix=self._run_suffix if run_suffix is None else run_suffix,
+        )
+
+    def _ensure_fitted(self) -> None:
+        """Raise if the builder has no fitted model and topic assignments."""
+        if self.topic_model is None:
+            raise RuntimeError("Call fit_transform before this operation.")
+        if self.topics is None:
+            if os.path.exists(self._topics_path):
+                self.topics = np.load(self._topics_path)
+            else:
+                raise RuntimeError(
+                    "Topic assignments are missing. Call fit_transform first."
+                )
+        if self.probs is None and os.path.exists(self._probs_path):
+            self.probs = np.load(self._probs_path, allow_pickle=True)
+
+    def _copy_saved_model_to(self, dest_model_path: str) -> None:
+        """Copy the on-disk BERTopic model directory to ``dest_model_path``."""
+        if not os.path.exists(self._saved_model_path):
+            raise RuntimeError(
+                f"Saved model not found at '{self._saved_model_path}'. "
+                "Call fit_transform first."
+            )
+        if os.path.exists(dest_model_path):
+            shutil.rmtree(dest_model_path)
+        shutil.copytree(self._saved_model_path, dest_model_path)
+
+    def _persist_variant(
+        self,
+        builder: "BerTopicModelBuilder",
+        topic_model: BERTopic,
+        topics: np.ndarray,
+        probs,
+    ) -> None:
+        """Save model, topics/probs, visualizations, and evaluation for a variant run."""
+        try:
+            topic_model.save(builder._saved_model_path)
+            builder._log(f"Saved BERTopic model: {builder._saved_model_path}")
+        except Exception as ex:
+            logger.warning(
+                "Could not save BERTopic model '%s': %s",
+                builder._saved_model_path,
+                ex,
+            )
+
+        try:
+            np.save(builder._topics_path, np.asarray(topics))
+            np.save(builder._probs_path, np.asarray(probs, dtype=object))
+            builder._log(
+                f"Saved topics/probs artifacts: {builder._topics_path}, {builder._probs_path}"
+            )
+        except Exception as ex:
+            logger.warning("Could not save topics/probs artifacts: %s", ex)
+
+        builder._save_visualizations(
+            topic_model=topic_model,
+            output_dir=builder._visualizations_path,
+            force_compute=True,
+        )
+        results = builder._run_and_save_evaluation(
+            topic_model=topic_model,
+            topics=topics,
+            output_path=builder._evaluation_metrics_path,
+            model_id=builder.model_id,
+        )
+        builder.topic_model = topic_model
+        builder.topics = np.asarray(topics)
+        builder.probs = probs
+        builder.evaluation_results = results
+        builder.coherence_score = results.get("coherence_c_v")
+
     def _sentence_chunking(self, text, nlp):
         """Split ``text`` into sentence-based chunks up to ``max_words`` each.
 
@@ -441,25 +558,35 @@ class BerTopicModelBuilder:
         np.save(embeddings_file_path, self.embeddings)
         self._log(f"Saved embeddings cache: {self._ec.embeddings_file}")
 
-    def _save_visualizations(self) -> None:
+    def _save_visualizations(
+        self,
+        topic_model: Optional[BERTopic] = None,
+        output_dir: Optional[str] = None,
+        force_compute: bool = False,
+    ) -> None:
         """Generate and save any missing BERTopic visualization files.
 
         HTML outputs are required artifacts for each visualization type. Static
         image snapshots are best-effort and depend on Plotly export backends.
         """
+        topic_model = topic_model or self.topic_model
+        output_dir = output_dir or self._visualizations_path
+        if topic_model is None:
+            raise RuntimeError("No topic model available for visualizations.")
+
         visualizations = [
-            (f"topics_pyldavis.html", self.topic_model.visualize_topics),
-            (f"heatmap.html", self.topic_model.visualize_heatmap),
-            (f"hierarchy.html", self.topic_model.visualize_hierarchy),
+            (f"topics_pyldavis.html", topic_model.visualize_topics),
+            (f"heatmap.html", topic_model.visualize_heatmap),
+            (f"hierarchy.html", topic_model.visualize_hierarchy),
             (
                 f"barchart_top20.html",
-                lambda: self.topic_model.visualize_barchart(top_n_topics=20),
+                lambda: topic_model.visualize_barchart(top_n_topics=20),
             ),
         ]
-        force_compute = self._compute_config.force_visualizations
+        force_compute = force_compute or self._compute_config.force_visualizations
 
         for file_name, visualize_fn in visualizations:
-            output_path = os.path.join(self._visualizations_path, file_name)
+            output_path = os.path.join(output_dir, file_name)
             png_path = output_path.replace(".html", ".png")
             jpg_path = output_path.replace(".html", ".jpg")
             has_html = os.path.exists(output_path)
@@ -500,7 +627,7 @@ class BerTopicModelBuilder:
         missing_html = [
             file_name
             for file_name, _ in visualizations
-            if not os.path.exists(os.path.join(self._visualizations_path, file_name))
+            if not os.path.exists(os.path.join(output_dir, file_name))
         ]
         if missing_html:
             logger.error(
@@ -606,6 +733,47 @@ class BerTopicModelBuilder:
             )
             return False
 
+    def _run_and_save_evaluation(
+        self,
+        topic_model: BERTopic,
+        topics: np.ndarray,
+        output_path: str,
+        model_id: str,
+    ) -> dict:
+        """Run the evaluator and persist results to ``output_path``."""
+        if self.embeddings is None:
+            self._load_embeddings()
+
+        evaluator = BerTopicEvaluator(
+            topic_model=topic_model,
+            texts=self._texts,
+            topics=topics,
+            embeddings=self.embeddings,
+            doc_ids=(
+                getattr(self, "_doc_ids", None)
+                if self._ec.document_representation is DocumentRepresentation.CHUNKS
+                else None
+            ),
+            cache_dir=self._evaluation_cache_path,
+            document_representation=self._ec.document_representation.value,
+            model_id=model_id,
+        )
+        results = evaluator.evaluate()
+        evaluator.save(
+            results=results,
+            output_path=output_path,
+            metadata={
+                "model_id": model_id,
+                "document_representation": self._ec.document_representation.value,
+                "embedding_config": asdict(self._ec),
+                "umap_config": asdict(self._umap_config),
+                "hdbscan_config": asdict(self._hdbscan_config),
+                "outlier_reduction_config": asdict(self._outlier_reduction_config),
+            },
+        )
+        self._log(f"Saved evaluation results to {output_path}")
+        return results
+
     def _fit_transform_model(self, force_compute: bool=False) -> bool:
         """Load cached BERTopic outputs, or fit and optionally cache them.
 
@@ -629,17 +797,30 @@ class BerTopicModelBuilder:
             self.topics, self.probs = self.topic_model.fit_transform(self._texts, self.embeddings)
             return False
 
-    def _reduce_outliers(self) -> None:
-        """Reassign topic ``-1`` documents using BERTopic's reduce_outliers."""
-        config = self._outlier_reduction_config
-        if not config.enabled:
-            return
+    def _reduce_outliers(
+        self,
+        topic_model: Optional[BERTopic] = None,
+        topics: Optional[np.ndarray] = None,
+        probs=None,
+        config: Optional[OutlierReductionConfig] = None,
+    ) -> np.ndarray:
+        """Reassign topic ``-1`` documents using BERTopic's reduce_outliers.
 
-        topics_array = np.asarray(self.topics)
+        Returns updated topic assignments without mutating ``self`` unless
+        callers use the default arguments (``self.topic_model``, ``self.topics``).
+        """
+        topic_model = topic_model or self.topic_model
+        config = config or self._outlier_reduction_config
+        topics_array = np.asarray(topics if topics is not None else self.topics)
+        probs = self.probs if probs is None else probs
+
+        if not config.enabled:
+            return topics_array
+
         outliers_before = int(np.sum(topics_array == -1))
         if outliers_before == 0:
             self._log("Outlier reduction enabled but no outlier assignments found.")
-            return
+            return topics_array
 
         kwargs = {
             "documents": self._texts,
@@ -648,15 +829,17 @@ class BerTopicModelBuilder:
             "threshold": config.threshold,
         }
         if config.strategy is OutlierReductionStrategy.EMBEDDINGS:
+            if self.embeddings is None:
+                self._load_embeddings()
             kwargs["embeddings"] = self.embeddings
         elif config.strategy is OutlierReductionStrategy.PROBABILITIES:
-            if self.probs is None:
+            if probs is None:
                 logger.warning(
                     "Outlier reduction strategy 'probabilities' requires topic "
                     "probabilities; skipping reduction."
                 )
-                return
-            kwargs["probabilities"] = self.probs
+                return topics_array
+            kwargs["probabilities"] = probs
         elif config.strategy is OutlierReductionStrategy.DISTRIBUTIONS:
             kwargs["distributions_params"] = config.distributions_params
 
@@ -665,10 +848,10 @@ class BerTopicModelBuilder:
             f"threshold={config.threshold}. "
             f"Outlier assignments before reduction: {outliers_before}."
         )
-        new_topics = self.topic_model.reduce_outliers(**kwargs)
-        self.topics = np.asarray(new_topics)
+        new_topics = topic_model.reduce_outliers(**kwargs)
+        new_topics_array = np.asarray(new_topics)
 
-        outliers_after = int(np.sum(self.topics == -1))
+        outliers_after = int(np.sum(new_topics_array == -1))
         reassigned = outliers_before - outliers_after
         self._log(
             f"Outlier reduction complete. Reassigned {reassigned} assignments; "
@@ -676,7 +859,9 @@ class BerTopicModelBuilder:
         )
 
         if reassigned > 0:
-            self.topic_model.update_topics(self._texts, topics=self.topics.tolist())
+            topic_model.update_topics(self._texts, topics=new_topics_array.tolist())
+
+        return new_topics_array
 
     def fit_transform(self):
         """Execute BERTopic pipeline with cache-first semantics.
@@ -734,7 +919,7 @@ class BerTopicModelBuilder:
 
         if not outputs_loaded:
             if self._outlier_reduction_config.enabled:
-                self._reduce_outliers()
+                self.topics = self._reduce_outliers()
             self._save_topics_probs()
             self._save_model()
 
@@ -752,35 +937,12 @@ class BerTopicModelBuilder:
 
         if not self._load_saved_evaluation_results():
             self._log("Running BERTopic evaluator.")
-            evaluator = BerTopicEvaluator(
+            self.evaluation_results = self._run_and_save_evaluation(
                 topic_model=self.topic_model,
-                texts=self._texts,
                 topics=self.topics,
-                embeddings=self.embeddings,
-                doc_ids=(
-                    getattr(self, "_doc_ids", None)
-                    if self._ec.document_representation is DocumentRepresentation.CHUNKS
-                    else None
-                ),
-                cache_dir=self._evaluation_cache_path,
-                document_representation=self._ec.document_representation.value,
+                output_path=self._evaluation_metrics_path,
                 model_id=self.model_id,
             )
-            self.evaluation_results = evaluator.evaluate()
-
-            evaluator.save(
-                results=self.evaluation_results,
-                output_path=self._evaluation_metrics_path,
-                metadata={
-                    "model_id": self.model_id,
-                    "document_representation": self._ec.document_representation.value,
-                    "embedding_config": asdict(self._ec),
-                    "umap_config": asdict(self._umap_config),
-                    "hdbscan_config": asdict(self._hdbscan_config),
-                    "outlier_reduction_config": asdict(self._outlier_reduction_config),
-                },
-            )
-            self._log(f"Saved evaluation results to {self._evaluation_metrics_path}")
 
         if self.evaluation_results is None:
             raise RuntimeError("Evaluation metrics are missing after fit_transform execution.")
@@ -894,10 +1056,102 @@ class BerTopicModelBuilder:
 
         return result
 
-    def merge_topics(self, merge_topic_list: list[list[int]]):
+    def merge_topics(self, merge_topic_list: list[list[int]]) -> "BerTopicModelBuilder":
+        """Copy the current model, merge topics, and persist to a ``__merged`` run.
 
-        # apply the merge topic list
-        self.topic_model.merge_topics(self._texts, merge_topic_list)
+        The original builder is not modified. Returns a new builder with
+        ``load_merged=True`` and the merged model pre-loaded in memory.
 
-        # save new model
-        self._save_model()
+        Parameters
+        ----------
+        merge_topic_list : list of list of int
+            Groups of topic ids to merge (BERTopic ``merge_topics`` format).
+
+        Returns
+        -------
+        BerTopicModelBuilder
+            Builder pointing at ``runs/<base_id>__merged/`` (plus any existing
+            ``run_suffix`` on this instance).
+        """
+        self._ensure_fitted()
+        if self.embeddings is None:
+            self._load_embeddings()
+
+        merged_builder = self._clone_builder(load_merged=True)
+        self._copy_saved_model_to(merged_builder._saved_model_path)
+
+        merged_model = BERTopic.load(merged_builder._saved_model_path)
+        merged_model.merge_topics(self._texts, merge_topic_list)
+        merged_topics = np.asarray(merged_model.topics_)
+        probs = self.probs
+
+        self._persist_variant(
+            builder=merged_builder,
+            topic_model=merged_model,
+            topics=merged_topics,
+            probs=probs,
+        )
+        merged_builder.embeddings = self.embeddings
+        if hasattr(self, "_texts"):
+            merged_builder._texts = self._texts
+        if hasattr(self, "_doc_ids"):
+            merged_builder._doc_ids = self._doc_ids
+        self._log(f"Merged model persisted under: {merged_builder._run_path}")
+        return merged_builder
+
+    def reduce_outliers(
+        self, config: OutlierReductionConfig
+    ) -> "BerTopicModelBuilder":
+        """Copy the current model, apply outlier reduction, and persist to a new run.
+
+        The original builder is not modified. Returns a new builder whose
+        ``model_id`` includes ``compute_or_suffix(config)`` appended after any
+        existing ``run_suffix`` (and after ``__merged`` when applicable).
+
+        Parameters
+        ----------
+        config : OutlierReductionConfig
+            Outlier reduction settings; ``enabled`` must be True.
+
+        Returns
+        -------
+        BerTopicModelBuilder
+            Builder pointing at the new outlier-reduction variant directory.
+        """
+        if not config.enabled:
+            raise ValueError("Outlier reduction config must have enabled=True.")
+
+        self._ensure_fitted()
+        if self.embeddings is None:
+            self._load_embeddings()
+
+        or_suffix = self.compute_or_suffix(config)
+        or_builder = self._clone_builder(
+            load_merged=self._load_merged,
+            run_suffix=self._run_suffix + or_suffix,
+        )
+        self._copy_saved_model_to(or_builder._saved_model_path)
+
+        or_model = BERTopic.load(or_builder._saved_model_path)
+        reduced_topics = self._reduce_outliers(
+            topic_model=or_model,
+            topics=self.topics,
+            probs=self.probs,
+            config=config,
+        )
+
+        self._persist_variant(
+            builder=or_builder,
+            topic_model=or_model,
+            topics=reduced_topics,
+            probs=self.probs,
+        )
+        or_builder.embeddings = self.embeddings
+        if hasattr(self, "_texts"):
+            or_builder._texts = self._texts
+        if hasattr(self, "_doc_ids"):
+            or_builder._doc_ids = self._doc_ids
+        self._log(
+            f"Outlier-reduced model persisted under: {or_builder._run_path}"
+        )
+        return or_builder

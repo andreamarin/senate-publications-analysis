@@ -407,9 +407,6 @@ class BerTopicModelBuilder:
         else:
             self._log("Embeddings cache not found. Computing embeddings.")
 
-        self._log(f"Loading embedding model: {self._ec.embedding_model}")
-        embedding_model = SentenceTransformer(self._ec.embedding_model)
-
         if self._ec.document_representation is not DocumentRepresentation.FULL_TEXT:
             self._log(f"Document representation: {self._ec.document_representation.value}")
             # create chunks for sentences
@@ -417,7 +414,7 @@ class BerTopicModelBuilder:
 
             # encode the chunks
             self._log(f"Encoding {len(self._texts)} chunks.")
-            chunk_embeddings = embedding_model.encode(
+            chunk_embeddings = self.embedding_model.encode(
                 self._texts, show_progress_bar=self._verbose
             )
             if self._ec.document_representation is DocumentRepresentation.MEAN_POOLING:
@@ -437,7 +434,7 @@ class BerTopicModelBuilder:
             self._log("Document representation: full_text")
             self._texts = list(self._document_texts)
             self._log(f"Encoding {len(self._texts)} full documents.")
-            self.embeddings = embedding_model.encode(
+            self.embeddings = self.embedding_model.encode(
                 self._texts, show_progress_bar=self._verbose
             )
 
@@ -521,6 +518,9 @@ class BerTopicModelBuilder:
             in-memory model is initialized.
         """
 
+        self._log(f"Loading embedding model: {self._ec.embedding_model}")
+        self.embedding_model = SentenceTransformer(self._ec.embedding_model)
+
         if not force_compute and os.path.exists(self._saved_model_path):
             self.topic_model = BERTopic.load(self._saved_model_path)
             self._log(f"Loaded saved BERTopic model: {self._saved_model_path}")
@@ -561,6 +561,7 @@ class BerTopicModelBuilder:
                 vectorizer_model=countvectorizer_model,
                 calculate_probabilities=calculate_probabilities,
                 verbose=self._verbose,
+                embedding_model=self.embedding_model,
             )
             return False
 

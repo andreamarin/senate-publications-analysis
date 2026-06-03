@@ -113,15 +113,16 @@ class EmbeddingConfig:
 class CountVectorizerConfig:
     """Configuration for the CountVectorizer step"""
     strip_accents: str = None
-    extra_stop_words: list[str] = []
+    extra_stop_words: list[str] = None
     lowercase: bool = False
     min_df: int = 10
     ngram_range: tuple = (1,1)
 
     def __post_init__(self) -> None:
         self.stop_words = stopwords.words('spanish')
-        self.stop_words.extend(self.extra_stop_words)
 
+        if self.extra_stop_words:
+            self.stop_words.extend(self.extra_stop_words)
 
 
 @dataclass

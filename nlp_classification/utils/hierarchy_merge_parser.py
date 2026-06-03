@@ -19,6 +19,8 @@ from typing import TextIO
 MERGE_MARKER = ">>>>> MERGE"
 BRANCH_PATTERN = re.compile(r"([├└])─\s*(.*)$")
 TOPIC_PATTERN = re.compile(r"Topic:\s*(-?\d+)")
+# BERTopic trees indent one level per 5 columns (``│    `` or ``     ``).
+INDENT_STEP = 5
 
 
 @dataclass
@@ -39,8 +41,9 @@ def _line_depth(line: str) -> int | None:
     if not match:
         return None
 
-    prefix = line[: match.start()]
-    return prefix.count("│") + 1
+    # Use horizontal position of the branch marker, not only ``│`` count.
+    # BERTopic mixes ``│    `` prefixes with space-only ``     `` indentation.
+    return match.start() // INDENT_STEP + 1
 
 
 def _parse_tree_line(line: str) -> tuple[int, str, bool, int | None] | None:

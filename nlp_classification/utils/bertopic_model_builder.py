@@ -222,20 +222,6 @@ class BerTopicModelBuilder:
 
     def _build_model_id(self) -> str:
         """Build a human-readable deterministic id from model configs."""
-        payload = {
-            "embedding_config": asdict(self._ec),
-            "umap_config": asdict(self._umap_config),
-            "hdbscan_config": asdict(self._hdbscan_config),
-            "outlier_reduction_config": asdict(self._outlier_reduction_config),
-        }
-
-        embedding_model_slug = str(self._ec.embedding_model).replace("\\", "/").split("/")[-1]
-        embedding_model_slug = (
-            embedding_model_slug.replace(" ", "_")
-            .replace(".", "_")
-            .replace("-", "_")
-            .lower()
-        )
 
         representation = self._ec.document_representation.value
         max_words = self._ec.max_words
@@ -244,7 +230,7 @@ class BerTopicModelBuilder:
         hdbscan_min_cluster = self._hdbscan_config.min_cluster_size
 
         readable_prefix = (
-            f"emb_{embedding_model_slug}"
+            f"emb_{self._ec.embedding_model_slug}"
             f"__rep_{representation}"
             f"__mw_{max_words}"
             f"__umap_n{umap_neighbors}_c{umap_components}"
@@ -254,6 +240,7 @@ class BerTopicModelBuilder:
             strategy_slug = self._outlier_reduction_config.strategy.value.replace("-", "")
             threshold_slug = str(self._outlier_reduction_config.threshold).replace(".", "p")
             readable_prefix += f"__or_{strategy_slug}_t{threshold_slug}"
+
         # Keep file/folder names manageable while still readable.
         readable_prefix = readable_prefix[:120]
         return readable_prefix

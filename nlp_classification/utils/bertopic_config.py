@@ -93,6 +93,14 @@ class EmbeddingConfig:
         """Normalize ``document_representation`` and set cache filenames."""
         dr = self.document_representation
 
+        self.embedding_model_slug = str(self.embedding_model).replace("\\", "/").split("/")[-1]
+        self.embedding_model_slug = (
+            self.embedding_model_slug.replace(" ", "_")
+            .replace(".", "_")
+            .replace("-", "_")
+            .lower()
+        )
+
         if isinstance(dr, str):
             try:
                 self.document_representation = DocumentRepresentation(dr)
@@ -101,12 +109,12 @@ class EmbeddingConfig:
 
         if self.document_representation is not DocumentRepresentation.FULL_TEXT:
             self.embeddings_file = (
-                f"embeddings_{self.document_representation.value}_{self.max_words}.npy"
+                f"embeddings_{self.embedding_model_slug}_{self.document_representation.value}_{self.max_words}.npy"
             )
             self.chunks_file = f"chunks_{self.max_words}.pkl"
             self.doc_ids_file = f"doc_ids_{self.max_words}.npy"
         else:
-            self.embeddings_file = f"embeddings_{self.document_representation.value}.npy"
+            self.embeddings_file = f"embeddings_{self.embedding_model_slug}_{self.document_representation.value}.npy"
 
 
 @dataclass

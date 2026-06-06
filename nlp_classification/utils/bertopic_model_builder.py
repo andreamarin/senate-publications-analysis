@@ -504,6 +504,9 @@ class BerTopicModelBuilder:
         embeddings_file_path = os.path.join(self._embeddings_path, self._ec.embeddings_file)
         force_compute = self._compute_config.force_embeddings
 
+        self._log(f"Loading embedding model: {self._ec.embedding_model}")
+        self.embedding_model = SentenceTransformer(self._ec.embedding_model)
+
         if os.path.exists(embeddings_file_path) and not force_compute:
             self._log(f"Loading embeddings cache: {self._ec.embeddings_file}")
             self.embeddings = np.load(embeddings_file_path)
@@ -652,9 +655,6 @@ class BerTopicModelBuilder:
             ``True`` when a model is loaded from disk, ``False`` when a new
             in-memory model is initialized.
         """
-
-        self._log(f"Loading embedding model: {self._ec.embedding_model}")
-        self.embedding_model = SentenceTransformer(self._ec.embedding_model)
 
         if not force_compute and os.path.exists(self._saved_model_path):
             self.topic_model = BERTopic.load(self._saved_model_path)

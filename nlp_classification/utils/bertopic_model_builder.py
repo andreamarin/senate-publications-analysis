@@ -673,7 +673,7 @@ class BerTopicModelBuilder:
                 and self._outlier_reduction_config.requires_probabilities()
             )
 
-            countvectorizer_model = CountVectorizer(
+            self.countvectorizer_model = CountVectorizer(
                 strip_accents=self._countvectorizer_config.strip_accents,
                 lowercase=self._countvectorizer_config.lowercase,
                 stop_words=self._countvectorizer_config.stop_words,
@@ -684,7 +684,7 @@ class BerTopicModelBuilder:
             self.topic_model = BERTopic(
                 umap_model=umap_model,
                 hdbscan_model=hdbscan_model,
-                vectorizer_model=countvectorizer_model,
+                vectorizer_model=self.countvectorizer_model,
                 calculate_probabilities=calculate_probabilities,
                 verbose=self._verbose,
                 embedding_model=self.embedding_model,
@@ -858,7 +858,7 @@ class BerTopicModelBuilder:
         )
 
         if reassigned > 0:
-            topic_model.update_topics(self._texts, topics=new_topics_array.tolist())
+            topic_model.update_topics(self._texts, topics=new_topics_array.tolist(), vectorizer_model=self.countvectorizer_model)
 
         return new_topics_array
 
@@ -1079,10 +1079,14 @@ class BerTopicModelBuilder:
         merged_builder = self._clone_builder(load_merged=True)
         self._copy_saved_model_to(merged_builder._saved_model_path)
 
+        # merge topics
         merged_model = BERTopic.load(merged_builder._saved_model_path)
         merged_model.merge_topics(self._texts, merge_topic_list)
         merged_topics = np.asarray(merged_model.topics_)
         probs = self.probs
+
+        # update topic representation
+        merged_model.update_topics(self._texts, vectorizer_model=self.countvectorizer_model)
 
         self._persist_variant(
             builder=merged_builder,

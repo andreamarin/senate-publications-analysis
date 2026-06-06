@@ -634,6 +634,15 @@ class BerTopicModelBuilder:
                 + ", ".join(missing_html)
             )
 
+    def _create_countvectorizer_model(self) -> CountVectorizer:
+        return CountVectorizer(
+            strip_accents=self._countvectorizer_config.strip_accents,
+            lowercase=self._countvectorizer_config.lowercase,
+            stop_words=self._countvectorizer_config.stop_words,
+            min_df=self._countvectorizer_config.min_df,
+            ngram_range=self._countvectorizer_config.ngram_range
+        )
+
     def _load_model(self, force_compute: bool=False) -> bool:
         """Load a fitted BERTopic model from disk or initialize a new one.
 
@@ -673,13 +682,7 @@ class BerTopicModelBuilder:
                 and self._outlier_reduction_config.requires_probabilities()
             )
 
-            self.countvectorizer_model = CountVectorizer(
-                strip_accents=self._countvectorizer_config.strip_accents,
-                lowercase=self._countvectorizer_config.lowercase,
-                stop_words=self._countvectorizer_config.stop_words,
-                min_df=self._countvectorizer_config.min_df,
-                ngram_range=self._countvectorizer_config.ngram_range
-            )
+            self.countvectorizer_model = self._create_countvectorizer_model()
 
             self.topic_model = BERTopic(
                 umap_model=umap_model,
@@ -858,6 +861,8 @@ class BerTopicModelBuilder:
         )
 
         if reassigned > 0:
+            if not hasattr(self, "countvectorizer_model"):
+                self.countvectorizer_model = self._create_countvectorizer_model()
             topic_model.update_topics(self._texts, topics=new_topics_array.tolist(), vectorizer_model=self.countvectorizer_model)
 
         return new_topics_array
@@ -1086,6 +1091,8 @@ class BerTopicModelBuilder:
         probs = self.probs
 
         # update topic representation
+        if not hasattr(self, "countvectorizer_model"):
+            self.countvectorizer_model = self._create_countvectorizer_model()
         merged_model.update_topics(self._texts, vectorizer_model=self.countvectorizer_model)
 
         self._persist_variant(

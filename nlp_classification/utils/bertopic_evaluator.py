@@ -156,7 +156,7 @@ class BerTopicEvaluator:
             "model_id": self._model_id,
             "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         }
-        with open(output_path, "w", encoding="utf-8") as fp:
+        with open(output_path, "w+", encoding="utf-8") as fp:
             json.dump(payload, fp, indent=2)
 
     def _tokenize_texts(self) -> list[list[str]]:

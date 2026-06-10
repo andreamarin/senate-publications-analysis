@@ -7,6 +7,15 @@ import pandas as pd
 from functools import partial
 
 
+DEFAULT_ENABLED_STEPS = {
+    "extra_processing": True,
+    "remove_words": True,
+    "remove_punctuation": True,
+    "lemmatize": True,
+    "stop_words": True,
+}
+
+
 class NlpProcessor:
 
     def __init__(
@@ -23,6 +32,10 @@ class NlpProcessor:
 
         self._remove_words = process_text_config.get("remove_words", [])
         self._stop_words = process_text_config.get("stop_words", [])
+        self._enabled_steps = {
+            **DEFAULT_ENABLED_STEPS,
+            **process_text_config.get("enabled_steps", {}),
+        }
 
         # create vectorized version of function
         self.process_corpus = np.vectorize(self._process_doc)
@@ -42,37 +55,30 @@ class NlpProcessor:
         """
         processed_text = text
 
-        # execute functions
-        for function in self._extra_processing_steps:
-            processed_text = function(processed_text)
+        if self._enabled_steps["extra_processing"]:
+            for function in self._extra_processing_steps:
+                processed_text = function(processed_text)
 
-        # remove specific words (before lemmatizing)
-        for word in self._remove_words:
-            processed_text = processed_text.replace(word, "")
+        if self._enabled_steps["remove_words"]:
+            for word in self._remove_words:
+                processed_text = processed_text.replace(word, "")
 
-        # remove punctuation marks
-        processed_text = regex.sub(r"\p{P}+", "", processed_text)
+        if self._enabled_steps["remove_punctuation"]:
+            processed_text = regex.sub(r"\p{P}+", "", processed_text)
 
-        # remove multiple spaces
         processed_text = re.sub(r" +", " ", processed_text)
         processed_text = processed_text.strip()
 
-        # lemmatize text and turn to lower case
-        nlp_text = self._nlp(processed_text)
-        lemmas = [word.lemma_.lower() for word in nlp_text]
-
-        if self._stop_words:
-            # remove stopwords
-            filtered_tokens = [
-                token for token in lemmas if token not in self._stop_words
-            ]
-
-            processed_text = " ".join(filtered_tokens)
+        if self._enabled_steps["lemmatize"]:
+            nlp_text = self._nlp(processed_text)
+            tokens = [word.lemma_.lower() for word in nlp_text]
         else:
-            # join all the tokens
-            processed_text = " ".join(lemmas)
+            tokens = processed_text.lower().split()
 
-        return processed_text.strip()
+        if self._enabled_steps["stop_words"] and self._stop_words:
+            tokens = [token for token in tokens if token not in self._stop_words]
+
+        return " ".join(tokens).strip()
 
     def _filter_by_pos(self, text: str, pos_tags: list):
         """

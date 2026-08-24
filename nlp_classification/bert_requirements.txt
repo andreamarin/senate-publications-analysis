@@ -6,7 +6,7 @@ pandas==2.2.3
 pymongo==4.14.1
 scikit-learn>=1.6
 sentence-transformers==5.3.0
-spacy==3.7.5
+spacy==3.8.15
 umap-learn==0.5.7
 pyLDAvis==3.4.1
 kaleido==0.2.1

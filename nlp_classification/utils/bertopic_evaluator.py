@@ -17,13 +17,15 @@ import os
 import pickle
 import hashlib
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 from bertopic import BERTopic
 from gensim import corpora
 from gensim.models.coherencemodel import CoherenceModel
 from sklearn.metrics import silhouette_score
+
+from .bertopic_config import EvaluationConfig
 
 
 class BerTopicEvaluator:
@@ -45,10 +47,11 @@ class BerTopicEvaluator:
         statistical association of top terms.
     silhouette_score
         Cluster separation in the **same embedding space** used for BERTopic
-        (rows excluded if topic label is ``-1``). High values mean assigned
-        topics form compact, well-separated groups in that space. Does **not**
-        measure lexical quality of topic words; can be misleading if clusters
-        overlap or outliers dominate.
+        (rows excluded if topic label is ``-1``). Computed on a random subsample
+        when the corpus is large (see :class:`EvaluationConfig`). High values
+        mean assigned topics form compact, well-separated groups in that space.
+        Does **not** measure lexical quality of topic words; can be misleading if
+        clusters overlap or outliers dominate.
     topic_diversity
         Share of **distinct** terms across all topics' top words divided by
         total top-word slots (after filtering to the vocabulary used for
@@ -72,6 +75,8 @@ class BerTopicEvaluator:
     document_representation
         Label for cache keying, e.g. ``full_text`` or ``chunks``, so caches do
         not collide across representation modes.
+    evaluation_config
+        Silhouette sampling and which coherence metrics to compute.
     """
 
     def __init__(
@@ -84,6 +89,7 @@ class BerTopicEvaluator:
         cache_dir: str | None = None,
         document_representation: str | None = None,
         model_id: str | None = None,
+        evaluation_config: Optional[EvaluationConfig] = None,
     ):
         self._topic_model = topic_model
         self._texts = texts
@@ -93,6 +99,7 @@ class BerTopicEvaluator:
         self._cache_dir = cache_dir
         self._document_representation = document_representation
         self._model_id = model_id
+        self._evaluation_config = evaluation_config or EvaluationConfig()
 
     def evaluate(self, top_n_words: int = 10) -> dict[str, Any]:
         """Compute coherence, silhouette, and topic-diversity metrics.
@@ -106,38 +113,15 @@ class BerTopicEvaluator:
         Returns
         -------
         dict
-            Keys include ``coherence_c_v``, ``coherence_u_mass``,
-            ``coherence_c_npmi``, ``silhouette_score`` (or ``None`` if not
-            defined), ``topic_diversity``, ``top_n_words``, and ``topics_count``.
-            See the class docstring for what each score measures.
+            Keys include configured coherence metrics, ``silhouette_score``
+            (or ``None``), ``silhouette_n_samples``, ``topic_diversity``,
+            ``top_n_words``, and ``topics_count``.
         """
         tokenized_texts, dictionary, corpus = self._load_or_create_corpus_cache()
         topics_words = self._extract_topic_words(dictionary, top_n_words)
 
         outliers_count, outliers_ratio, documents_count = self._compute_outlier_stats()
-        metrics = {
-            "coherence_c_v": self._compute_coherence(
-                topics_words=topics_words,
-                tokenized_texts=tokenized_texts,
-                dictionary=dictionary,
-                corpus=corpus,
-                coherence_type="c_v",
-            ),
-            "coherence_u_mass": self._compute_coherence(
-                topics_words=topics_words,
-                tokenized_texts=tokenized_texts,
-                dictionary=dictionary,
-                corpus=corpus,
-                coherence_type="u_mass",
-            ),
-            "coherence_c_npmi": self._compute_coherence(
-                topics_words=topics_words,
-                tokenized_texts=tokenized_texts,
-                dictionary=dictionary,
-                corpus=corpus,
-                coherence_type="c_npmi",
-            ),
-            "silhouette_score": self._compute_silhouette_score(),
+        metrics: dict[str, Any] = {
             "topic_diversity": self._compute_topic_diversity(topics_words),
             "top_n_words": top_n_words,
             "topics_count": len(topics_words),
@@ -145,6 +129,20 @@ class BerTopicEvaluator:
             "outliers_ratio": outliers_ratio,
             "documents_count": documents_count,
         }
+
+        for coherence_type in self._evaluation_config.coherence_metrics:
+            key = f"coherence_{coherence_type}"
+            metrics[key] = self._compute_coherence(
+                topics_words=topics_words,
+                tokenized_texts=tokenized_texts,
+                dictionary=dictionary,
+                corpus=corpus,
+                coherence_type=coherence_type,
+            )
+
+        silhouette, silhouette_n = self._compute_silhouette_score()
+        metrics["silhouette_score"] = silhouette
+        metrics["silhouette_n_samples"] = silhouette_n
 
         return metrics
 
@@ -218,23 +216,43 @@ class BerTopicEvaluator:
         )
         return float(coherence_model.get_coherence())
 
-    def _compute_silhouette_score(self) -> float | None:
-        """Mean silhouette of non-outlier points in ``embeddings`` by topic id."""
+    def _compute_silhouette_score(self) -> tuple[float | None, int]:
+        """Mean silhouette of non-outlier points, optionally subsampled.
+
+        Returns
+        -------
+        score, n_samples
+            Silhouette value (or ``None``) and how many points were used.
+        """
+        sample_size = int(self._evaluation_config.silhouette_sample_size)
+        if sample_size <= 0:
+            return None, 0
+
         labels = self._topics
         valid_mask = labels != -1
         valid_labels = labels[valid_mask]
 
         if valid_labels.size < 2:
-            return None
+            return None, 0
 
         if np.unique(valid_labels).size < 2:
-            return None
+            return None, 0
 
         valid_embeddings = self._embeddings[valid_mask]
         if valid_embeddings.shape[0] < 2:
-            return None
+            return None, 0
 
-        return float(silhouette_score(valid_embeddings, valid_labels))
+        n_points = int(valid_embeddings.shape[0])
+        if n_points > sample_size:
+            rng = np.random.default_rng(self._evaluation_config.silhouette_random_state)
+            idx = rng.choice(n_points, size=sample_size, replace=False)
+            valid_embeddings = valid_embeddings[idx]
+            valid_labels = valid_labels[idx]
+            if np.unique(valid_labels).size < 2:
+                return None, int(valid_labels.size)
+
+        n_used = int(valid_embeddings.shape[0])
+        return float(silhouette_score(valid_embeddings, valid_labels)), n_used
 
     def _compute_topic_diversity(self, topics_words: list[list[str]]) -> float:
         """Ratio of unique top terms to total top-term slots across topics."""

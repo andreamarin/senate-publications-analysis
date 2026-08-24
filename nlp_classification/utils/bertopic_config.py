@@ -38,6 +38,39 @@ class HDBSCANConfig:
     prediction_data: bool = False
 
 
+@dataclass
+class EvaluationConfig:
+    """Options for :class:`BerTopicEvaluator` metrics computation.
+
+    Parameters
+    ----------
+    silhouette_sample_size
+        Max non-outlier rows used for silhouette. Full pairwise silhouette on
+        millions of points is intractable; sampling keeps the metric usable.
+        Default ``350_000`` is ~10% of a ~3.3M-chunk corpus. Set to ``0`` to
+        skip silhouette entirely.
+    silhouette_random_state
+        RNG seed for silhouette subsampling (reproducible across runs).
+    coherence_metrics
+        Which Gensim coherence types to compute. Subset of
+        ``c_v``, ``u_mass``, ``c_npmi``. Empty tuple skips coherence.
+    """
+
+    silhouette_sample_size: int = 350_000
+    silhouette_random_state: int = 20260415
+    coherence_metrics: tuple[str, ...] = ("c_v", "u_mass", "c_npmi")
+
+    def __post_init__(self) -> None:
+        allowed = {"c_v", "u_mass", "c_npmi"}
+        metrics = tuple(self.coherence_metrics)
+        invalid = [m for m in metrics if m not in allowed]
+        if invalid:
+            raise ValueError(
+                f"Unsupported coherence_metrics {invalid}; allowed: {sorted(allowed)}"
+            )
+        self.coherence_metrics = metrics
+
+
 class OutlierReductionStrategy(str, Enum):
     """Strategy passed to :meth:`bertopic.BERTopic.reduce_outliers`."""
 

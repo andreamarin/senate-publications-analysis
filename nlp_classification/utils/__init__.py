@@ -11,6 +11,7 @@ from .bertopic_config import (
     OutlierReductionConfig,
     OutlierReductionStrategy,
     CountVectorizerConfig,
+    EvaluationConfig,
 )
 from .bertopic_results_comparator import generate_metrics_comparison_graphs
 from .hierarchy_merge_parser import (
@@ -31,6 +32,7 @@ __all__ = [
     "OutlierReductionConfig",
     "OutlierReductionStrategy",
     "CountVectorizerConfig",
+    "EvaluationConfig",
     "BerTopicEvaluator",
     "NlpProcessor",
     "LDAModelBuilder",

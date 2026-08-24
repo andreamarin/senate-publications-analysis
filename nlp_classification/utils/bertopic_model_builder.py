@@ -24,6 +24,7 @@ from .bertopic_config import (
     OutlierReductionConfig,
     OutlierReductionStrategy,
     CountVectorizerConfig,
+    EvaluationConfig,
 )
 from .bertopic_evaluator import BerTopicEvaluator
 
@@ -90,6 +91,13 @@ class BerTopicModelBuilder:
     outlier_reduction_config : OutlierReductionConfig, optional
         When enabled, reassigns HDBSCAN outlier documents (topic ``-1``) after
         the initial fit using :meth:`~bertopic.BERTopic.reduce_outliers`.
+    evaluation_config : EvaluationConfig, optional
+        Silhouette sampling and coherence metric selection for evaluation.
+    use_cuml : bool, default=True
+        When True, try RAPIDS cuML UMAP/HDBSCAN on GPU and fall back to the
+        CPU libraries if cuML is unavailable. You do not pass cuML instances
+        yourself; the builder constructs them from ``umap_config`` /
+        ``hdbscan_config``.
     load_merged : bool, default=False
         When True, load and persist artifacts under ``{model_id}__merged``.
     run_suffix : str, default=""
@@ -98,7 +106,7 @@ class BerTopicModelBuilder:
 
     Attributes
     ----------
-    umap_model : umap.UMAP
+    umap_model : umap.UMAP or cuml.manifold.UMAP
         UMAP instance built from ``umap_config``.
     topic_model : bertopic.BERTopic
         Created in :meth:`fit_transform`.
@@ -136,6 +144,8 @@ class BerTopicModelBuilder:
         base_path: str = None,
         compute_config: Optional[ComputeConfig] = None,
         outlier_reduction_config: Optional[OutlierReductionConfig] = None,
+        evaluation_config: Optional[EvaluationConfig] = None,
+        use_cuml: bool = True,
         load_merged: bool = False,
         run_suffix: str = "",
     ):
@@ -153,6 +163,9 @@ class BerTopicModelBuilder:
         self._countvectorizer_config = countvectorizer_config
         self._outlier_reduction_config = outlier_reduction_config or OutlierReductionConfig()
         self._compute_config = compute_config or ComputeConfig()
+        self._evaluation_config = evaluation_config or EvaluationConfig()
+        self._use_cuml = bool(use_cuml)
+        self._clustering_backend = "cpu"
         self._load_merged = load_merged
         self._run_suffix = run_suffix
 
@@ -202,6 +215,8 @@ class BerTopicModelBuilder:
         self.coherence_score = None
         self.evaluation_results = None
         self.hierarchical_topics = dict()
+        self.umap_model = None
+        self.hdbscan_model = None
 
     def _init_folders(self) -> None:
         """Create all run and cache directories required for cache-first flow."""
@@ -271,6 +286,8 @@ class BerTopicModelBuilder:
             base_path=self._resolved_base_path,
             compute_config=self._compute_config,
             outlier_reduction_config=self._outlier_reduction_config,
+            evaluation_config=self._evaluation_config,
+            use_cuml=self._use_cuml,
             load_merged=self._load_merged if load_merged is None else load_merged,
             run_suffix=self._run_suffix if run_suffix is None else run_suffix,
         )
@@ -924,19 +941,9 @@ class BerTopicModelBuilder:
         else:
             self._log("Initializing BERTopic model with configured UMAP and HDBSCAN.")
 
-            umap_model = UMAP(
-                n_neighbors=self._umap_config.n_neighbors,
-                n_components=self._umap_config.n_components,
-                min_dist=self._umap_config.min_dist,
-                metric=self._umap_config.metric,
-                random_state=self._umap_config.random_state,
-            )
-
-            hdbscan_model = HDBSCAN(
-                min_cluster_size=self._hdbscan_config.min_cluster_size,
-                metric=self._hdbscan_config.metric,
-                prediction_data=self._hdbscan_config.prediction_data,
-            )
+            umap_model, hdbscan_model = self._build_clustering_models()
+            self.umap_model = umap_model
+            self.hdbscan_model = hdbscan_model
 
             calculate_probabilities = (
                 self._outlier_reduction_config.enabled
@@ -954,6 +961,70 @@ class BerTopicModelBuilder:
                 embedding_model=self.embedding_model,
             )
             return False
+
+    def _build_clustering_models(self):
+        """Build UMAP + HDBSCAN, preferring cuML on GPU when requested.
+
+        Returns
+        -------
+        tuple
+            ``(umap_model, hdbscan_model)`` instances passed into BERTopic.
+        """
+        if self._use_cuml:
+            try:
+                from cuml.manifold import UMAP as CumlUMAP
+                from cuml.cluster import HDBSCAN as CumlHDBSCAN
+
+                umap_kwargs = {
+                    "n_neighbors": self._umap_config.n_neighbors,
+                    "n_components": self._umap_config.n_components,
+                    "min_dist": self._umap_config.min_dist,
+                    "metric": self._umap_config.metric,
+                    "random_state": self._umap_config.random_state,
+                }
+                hdbscan_kwargs = {
+                    "min_cluster_size": self._hdbscan_config.min_cluster_size,
+                    "metric": self._hdbscan_config.metric,
+                }
+                # prediction_data exists on recent cuML HDBSCAN builds; ignore if not.
+                if self._hdbscan_config.prediction_data:
+                    hdbscan_kwargs["prediction_data"] = True
+
+                umap_model = CumlUMAP(**umap_kwargs)
+                try:
+                    hdbscan_model = CumlHDBSCAN(**hdbscan_kwargs)
+                except TypeError:
+                    hdbscan_kwargs.pop("prediction_data", None)
+                    hdbscan_model = CumlHDBSCAN(**hdbscan_kwargs)
+                    if self._hdbscan_config.prediction_data:
+                        self._log(
+                            "cuML HDBSCAN does not accept prediction_data; "
+                            "continuing without it."
+                        )
+
+                self._clustering_backend = "cuml"
+                self._log("Using cuML UMAP + HDBSCAN (GPU).")
+                return umap_model, hdbscan_model
+            except Exception as ex:
+                self._log(
+                    f"cuML unavailable or failed ({ex}); falling back to CPU UMAP/HDBSCAN."
+                )
+
+        umap_model = UMAP(
+            n_neighbors=self._umap_config.n_neighbors,
+            n_components=self._umap_config.n_components,
+            min_dist=self._umap_config.min_dist,
+            metric=self._umap_config.metric,
+            random_state=self._umap_config.random_state,
+        )
+        hdbscan_model = HDBSCAN(
+            min_cluster_size=self._hdbscan_config.min_cluster_size,
+            metric=self._hdbscan_config.metric,
+            prediction_data=self._hdbscan_config.prediction_data,
+        )
+        self._clustering_backend = "cpu"
+        self._log("Using CPU umap-learn + hdbscan.")
+        return umap_model, hdbscan_model
 
     def _save_model(self) -> None:
         """Persist the fitted BERTopic model to the run directory."""
@@ -1020,6 +1091,7 @@ class BerTopicModelBuilder:
             cache_dir=self._evaluation_cache_path,
             document_representation=self._ec.document_representation.value,
             model_id=model_id,
+            evaluation_config=self._evaluation_config,
         )
         results = evaluator.evaluate()
         evaluator.save(
@@ -1032,6 +1104,13 @@ class BerTopicModelBuilder:
                 "umap_config": asdict(self._umap_config),
                 "hdbscan_config": asdict(self._hdbscan_config),
                 "outlier_reduction_config": asdict(self._outlier_reduction_config),
+                "evaluation_config": {
+                    **asdict(self._evaluation_config),
+                    "coherence_metrics": list(
+                        self._evaluation_config.coherence_metrics
+                    ),
+                },
+                "clustering_backend": self._clustering_backend,
             },
         )
         self._log(f"Saved evaluation results to {output_path}")
@@ -1057,6 +1136,11 @@ class BerTopicModelBuilder:
             return True
         else:
             self._log("Fitting BERTopic model.")
+            if self.embeddings is not None and self._clustering_backend == "cuml":
+                # cuML prefers contiguous float32 arrays.
+                self.embeddings = np.ascontiguousarray(
+                    self.embeddings, dtype=np.float32
+                )
             self.topics, self.probs = self.topic_model.fit_transform(self._texts, self.embeddings)
             return False
 

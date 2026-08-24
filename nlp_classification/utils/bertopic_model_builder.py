@@ -665,7 +665,23 @@ class BerTopicModelBuilder:
         force_compute = self._compute_config.force_embeddings
 
         self._log(f"Loading embedding model: {self._ec.embedding_model}")
-        self.embedding_model = SentenceTransformer(self._ec.embedding_model)
+        try:
+            import torch
+
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            torch = None
+            device = "cpu"
+
+        self.embedding_model = SentenceTransformer(
+            self._ec.embedding_model, device=device
+        )
+        self._log(f"Embedding model device: {device}")
+        if self._ec.use_fp16 and device == "cuda" and torch is not None:
+            self.embedding_model.half()
+            self._log("Enabled fp16 for embedding encode.")
+        elif self._ec.use_fp16 and device != "cuda":
+            self._log("use_fp16=True but CUDA unavailable; encoding in fp32.")
 
         if os.path.exists(embeddings_file_path) and not force_compute:
             self._log(f"Loading embeddings cache: {self._ec.embeddings_file}")

@@ -4,5 +4,4 @@ pyLDAvis==3.4.1
 nltk==3.9.1
 pandas==2.2.2
 tqdm==4.67.1
-gensim==4.3.3
-numpy<2.0
+gensim==4.4.0

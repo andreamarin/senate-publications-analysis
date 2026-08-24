@@ -88,6 +88,7 @@ class EmbeddingConfig:
     max_words: int
     spacy_model: str
     document_representation: Union[DocumentRepresentation, str]
+    encode_batch_size: int = 1024
 
     def __post_init__(self) -> None:
         """Normalize ``document_representation`` and set cache filenames."""

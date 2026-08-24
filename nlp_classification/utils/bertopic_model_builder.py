@@ -480,6 +480,176 @@ class BerTopicModelBuilder:
                 out[doc_id] = rows.max(axis=0)
         return out
 
+    def _embedding_checkpoint_paths(self, embeddings_file_path: str) -> tuple[str, str]:
+        """Return paths for the partial memmap and progress JSON sidecar."""
+        stem, _ = os.path.splitext(embeddings_file_path)
+        return f"{stem}.partial.npy", f"{stem}.progress.json"
+
+    def _clear_embedding_checkpoints(self, embeddings_file_path: str) -> None:
+        """Remove partial embedding memmap and progress sidecar if present."""
+        partial_path, progress_path = self._embedding_checkpoint_paths(embeddings_file_path)
+        for path in (partial_path, progress_path):
+            if os.path.exists(path):
+                os.remove(path)
+                self._log(f"Removed embedding checkpoint: {os.path.basename(path)}")
+
+    def _load_embedding_progress(
+        self,
+        progress_path: str,
+        n_texts: int,
+    ) -> Optional[dict]:
+        """Load and validate a progress sidecar for resume.
+
+        Returns
+        -------
+        dict or None
+            Valid progress dict with at least ``n_done`` and ``dim``, or None if
+            the checkpoint cannot be resumed.
+        """
+        if not os.path.exists(progress_path):
+            return None
+        try:
+            with open(progress_path, "r", encoding="utf-8") as f:
+                progress = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            self._log(f"Ignoring invalid embedding progress file: {exc}")
+            return None
+
+        if progress.get("n_texts") != n_texts:
+            self._log(
+                f"Embedding checkpoint n_texts mismatch "
+                f"({progress.get('n_texts')} vs {n_texts}); restarting."
+            )
+            return None
+        if progress.get("embedding_model") != self._ec.embedding_model:
+            self._log("Embedding checkpoint model mismatch; restarting.")
+            return None
+
+        n_done = progress.get("n_done")
+        dim = progress.get("dim")
+        if not isinstance(n_done, int) or not isinstance(dim, int):
+            return None
+        if n_done < 0 or n_done > n_texts or dim <= 0:
+            return None
+        return progress
+
+    def _write_embedding_progress(
+        self,
+        progress_path: str,
+        n_texts: int,
+        n_done: int,
+        dim: int,
+    ) -> None:
+        """Persist encode progress after flushing the memmap."""
+        payload = {
+            "n_texts": n_texts,
+            "n_done": n_done,
+            "embedding_model": self._ec.embedding_model,
+            "dim": dim,
+        }
+        with open(progress_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+
+    def _encode_texts(self, texts: list[str], embeddings_file_path: str) -> np.ndarray:
+        """Encode texts in batches with a resumable on-disk checkpoint.
+
+        Writes rows into a memmap ``.partial.npy`` beside the final cache and
+        records ``n_done`` in a ``.progress.json`` sidecar after each batch.
+        On restart, encoding continues from ``n_done`` when the checkpoint is
+        valid.
+
+        Parameters
+        ----------
+        texts : list of str
+            Strings to encode (chunks or full documents).
+        embeddings_file_path : str
+            Path of the final ``.npy`` cache; checkpoint paths are derived from it.
+
+        Returns
+        -------
+        numpy.ndarray, shape (n_texts, dim)
+            Dense embedding matrix for all ``texts``.
+        """
+        n_texts = len(texts)
+        if n_texts == 0:
+            return np.zeros((0, 0), dtype=np.float32)
+
+        partial_path, progress_path = self._embedding_checkpoint_paths(embeddings_file_path)
+        batch_size = max(1, int(self._ec.encode_batch_size))
+
+        progress = self._load_embedding_progress(progress_path, n_texts)
+        n_done = 0
+        dim = None
+        memmap = None
+
+        if progress is not None and os.path.exists(partial_path):
+            n_done = progress["n_done"]
+            dim = progress["dim"]
+            if n_done == n_texts:
+                self._log(
+                    f"Resuming complete embedding checkpoint "
+                    f"({n_done}/{n_texts}); loading memmap."
+                )
+                memmap = np.lib.format.open_memmap(partial_path, mode="r")
+                if memmap.shape != (n_texts, dim):
+                    self._log("Embedding checkpoint shape mismatch; restarting.")
+                    del memmap
+                    memmap = None
+                    n_done = 0
+                    dim = None
+                    self._clear_embedding_checkpoints(embeddings_file_path)
+                else:
+                    embeddings = np.asarray(memmap, dtype=np.float32).copy()
+                    del memmap
+                    return embeddings
+            elif 0 < n_done < n_texts:
+                self._log(f"Resuming embeddings from row {n_done}/{n_texts}.")
+                memmap = np.lib.format.open_memmap(partial_path, mode="r+")
+                if memmap.shape != (n_texts, dim):
+                    self._log("Embedding checkpoint shape mismatch; restarting.")
+                    del memmap
+                    memmap = None
+                    n_done = 0
+                    dim = None
+                    self._clear_embedding_checkpoints(embeddings_file_path)
+            else:
+                self._clear_embedding_checkpoints(embeddings_file_path)
+                n_done = 0
+                dim = None
+        else:
+            if progress is not None or os.path.exists(partial_path):
+                self._log("Incomplete embedding checkpoint; restarting.")
+            self._clear_embedding_checkpoints(embeddings_file_path)
+
+        while n_done < n_texts:
+            end = min(n_done + batch_size, n_texts)
+            batch_texts = texts[n_done:end]
+            self._log(f"Encoding batch {n_done}:{end} of {n_texts}.")
+            batch = self.embedding_model.encode(
+                batch_texts,
+                batch_size=batch_size,
+                show_progress_bar=self._verbose,
+            )
+            batch = np.asarray(batch, dtype=np.float32)
+
+            if memmap is None:
+                dim = int(batch.shape[1])
+                memmap = np.lib.format.open_memmap(
+                    partial_path,
+                    mode="w+",
+                    dtype=np.float32,
+                    shape=(n_texts, dim),
+                )
+
+            memmap[n_done:end] = batch
+            memmap.flush()
+            n_done = end
+            self._write_embedding_progress(progress_path, n_texts, n_done, dim)
+
+        embeddings = np.asarray(memmap, dtype=np.float32).copy()
+        del memmap
+        return embeddings
+
     def _load_embeddings(self) -> None:
         """Load cached ``.npy`` embeddings or encode texts and save.
 
@@ -487,6 +657,9 @@ class BerTopicModelBuilder:
         rows (per document for ``FULL_TEXT`` and pooling modes, per chunk for
         ``CHUNKS``). When the cache is hit, chunk lists are refreshed only for
         ``CHUNKS`` so ``self._texts`` matches the matrix width.
+
+        Encoding runs in configurable batches with a resumable checkpoint so a
+        crash mid-run does not discard completed batches.
         """
         embeddings_file_path = os.path.join(self._embeddings_path, self._ec.embeddings_file)
         force_compute = self._compute_config.force_embeddings
@@ -507,9 +680,13 @@ class BerTopicModelBuilder:
                 self._log(f"Using {len(self._texts)} full documents as BERTopic texts.")
 
             return
-        
+
         if force_compute:
             self._log("force_compute=True, recomputing embeddings.")
+            if os.path.exists(embeddings_file_path):
+                os.remove(embeddings_file_path)
+                self._log(f"Removed embeddings cache: {self._ec.embeddings_file}")
+            self._clear_embedding_checkpoints(embeddings_file_path)
         else:
             self._log("Embeddings cache not found. Computing embeddings.")
 
@@ -518,11 +695,9 @@ class BerTopicModelBuilder:
             # create chunks for sentences
             self._load_chunks()
 
-            # encode the chunks
+            # encode the chunks (batched + resumable)
             self._log(f"Encoding {len(self._texts)} chunks.")
-            chunk_embeddings = self.embedding_model.encode(
-                self._texts, show_progress_bar=self._verbose
-            )
+            chunk_embeddings = self._encode_texts(self._texts, embeddings_file_path)
             if self._ec.document_representation is DocumentRepresentation.MEAN_POOLING:
                 # pool the embeddings by the mean and set the texts to the original documents
                 self.embeddings = self._pool_document_embeddings(chunk_embeddings, "mean")
@@ -540,12 +715,11 @@ class BerTopicModelBuilder:
             self._log("Document representation: full_text")
             self._texts = list(self._document_texts)
             self._log(f"Encoding {len(self._texts)} full documents.")
-            self.embeddings = self.embedding_model.encode(
-                self._texts, show_progress_bar=self._verbose
-            )
+            self.embeddings = self._encode_texts(self._texts, embeddings_file_path)
 
         np.save(embeddings_file_path, self.embeddings)
         self._log(f"Saved embeddings cache: {self._ec.embeddings_file}")
+        self._clear_embedding_checkpoints(embeddings_file_path)
 
     def _save_visualizations(
         self,

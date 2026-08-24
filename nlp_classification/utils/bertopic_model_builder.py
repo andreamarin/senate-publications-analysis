@@ -480,14 +480,19 @@ class BerTopicModelBuilder:
                 out[doc_id] = rows.max(axis=0)
         return out
 
-    def _embedding_checkpoint_paths(self, embeddings_file_path: str) -> tuple[str, str]:
-        """Return paths for the partial memmap and progress JSON sidecar."""
+    def _embedding_checkpoint_paths(self, embeddings_file_path: str) -> tuple[str, str, str]:
+        """Return paths for legacy memmap, shard dir, and progress JSON."""
         stem, _ = os.path.splitext(embeddings_file_path)
-        return f"{stem}.partial.npy", f"{stem}.progress.json"
+        return f"{stem}.partial.npy", f"{stem}.shards", f"{stem}.progress.json"
 
     def _clear_embedding_checkpoints(self, embeddings_file_path: str) -> None:
-        """Remove partial embedding memmap and progress sidecar if present."""
-        partial_path, progress_path = self._embedding_checkpoint_paths(embeddings_file_path)
+        """Remove partial embedding checkpoints (legacy memmap, shards, progress)."""
+        partial_path, shards_dir, progress_path = self._embedding_checkpoint_paths(
+            embeddings_file_path
+        )
+        if os.path.isdir(shards_dir):
+            shutil.rmtree(shards_dir)
+            self._log(f"Removed embedding shard dir: {os.path.basename(shards_dir)}")
         for path in (partial_path, progress_path):
             if os.path.exists(path):
                 os.remove(path)
@@ -540,7 +545,7 @@ class BerTopicModelBuilder:
         n_done: int,
         dim: int,
     ) -> None:
-        """Persist encode progress after flushing the memmap."""
+        """Persist encode progress after a batch shard is saved."""
         payload = {
             "n_texts": n_texts,
             "n_done": n_done,
@@ -550,13 +555,86 @@ class BerTopicModelBuilder:
         with open(progress_path, "w", encoding="utf-8") as f:
             json.dump(payload, f)
 
+    def _embedding_shard_path(self, shards_dir: str, start: int, end: int) -> str:
+        """Path for one batch shard covering rows ``[start, end)``."""
+        return os.path.join(shards_dir, f"shard_{start:08d}_{end:08d}.npy")
+
+    def _list_embedding_shards(self, shards_dir: str) -> list[tuple[int, int, str]]:
+        """Return sorted ``(start, end, path)`` shard entries."""
+        if not os.path.isdir(shards_dir):
+            return []
+        shards: list[tuple[int, int, str]] = []
+        for name in os.listdir(shards_dir):
+            if not (name.startswith("shard_") and name.endswith(".npy")):
+                continue
+            parts = name[len("shard_") : -len(".npy")].split("_")
+            if len(parts) != 2:
+                continue
+            try:
+                start, end = int(parts[0]), int(parts[1])
+            except ValueError:
+                continue
+            shards.append((start, end, os.path.join(shards_dir, name)))
+        shards.sort(key=lambda item: item[0])
+        return shards
+
+    def _assemble_embedding_shards(
+        self,
+        shards_dir: str,
+        n_texts: int,
+        dim: int,
+    ) -> np.ndarray:
+        """Load shard files into a dense ``(n_texts, dim)`` matrix."""
+        embeddings = np.empty((n_texts, dim), dtype=np.float32)
+        filled = 0
+        for start, end, path in self._list_embedding_shards(shards_dir):
+            shard = np.load(path)
+            if shard.shape != (end - start, dim):
+                raise RuntimeError(
+                    f"Shard shape mismatch at {path}: got {shard.shape}, "
+                    f"expected {(end - start, dim)}"
+                )
+            embeddings[start:end] = shard
+            filled = max(filled, end)
+        if filled != n_texts:
+            raise RuntimeError(
+                f"Incomplete shard assembly: filled {filled}/{n_texts} rows."
+            )
+        return embeddings
+
+    def _migrate_legacy_partial_to_shards(
+        self,
+        partial_path: str,
+        shards_dir: str,
+        n_done: int,
+        dim: int,
+    ) -> None:
+        """Convert a legacy ``.partial.npy`` memmap into a single shard file."""
+        self._log(
+            f"Migrating legacy memmap checkpoint ({n_done} rows) to shard format..."
+        )
+        os.makedirs(shards_dir, exist_ok=True)
+        memmap = np.lib.format.open_memmap(partial_path, mode="r")
+        try:
+            if memmap.shape[1] != dim:
+                raise RuntimeError(
+                    f"Legacy partial dim {memmap.shape[1]} != progress dim {dim}"
+                )
+            shard = np.asarray(memmap[:n_done], dtype=np.float32)
+        finally:
+            del memmap
+        shard_path = self._embedding_shard_path(shards_dir, 0, n_done)
+        np.save(shard_path, shard)
+        os.remove(partial_path)
+        self._log(f"Migrated legacy checkpoint to {os.path.basename(shard_path)}.")
+
     def _encode_texts(self, texts: list[str], embeddings_file_path: str) -> np.ndarray:
         """Encode texts in batches with a resumable on-disk checkpoint.
 
-        Writes rows into a memmap ``.partial.npy`` beside the final cache and
-        records ``n_done`` in a ``.progress.json`` sidecar after each batch.
-        On restart, encoding continues from ``n_done`` when the checkpoint is
-        valid.
+        Each batch is saved as a small ``.npy`` shard under ``*.shards/`` (fast on
+        Google Drive). A ``.progress.json`` sidecar records ``n_done``. Legacy
+        single-file ``.partial.npy`` memmap checkpoints are migrated once on
+        resume. On restart, encoding continues from ``n_done`` when valid.
 
         Parameters
         ----------
@@ -574,52 +652,59 @@ class BerTopicModelBuilder:
         if n_texts == 0:
             return np.zeros((0, 0), dtype=np.float32)
 
-        partial_path, progress_path = self._embedding_checkpoint_paths(embeddings_file_path)
+        partial_path, shards_dir, progress_path = self._embedding_checkpoint_paths(
+            embeddings_file_path
+        )
         batch_size = max(1, int(self._ec.encode_batch_size))
 
         progress = self._load_embedding_progress(progress_path, n_texts)
         n_done = 0
         dim = None
-        memmap = None
 
-        if progress is not None and os.path.exists(partial_path):
+        if progress is not None:
             n_done = progress["n_done"]
             dim = progress["dim"]
-            if n_done == n_texts:
+            has_shards = os.path.isdir(shards_dir) and bool(
+                self._list_embedding_shards(shards_dir)
+            )
+            has_legacy = os.path.exists(partial_path)
+
+            if n_done == 0:
+                self._clear_embedding_checkpoints(embeddings_file_path)
+                dim = None
+            elif n_done == n_texts and has_shards:
                 self._log(
                     f"Resuming complete embedding checkpoint "
-                    f"({n_done}/{n_texts}); loading memmap."
+                    f"({n_done}/{n_texts}); assembling shards."
+                )
+                return self._assemble_embedding_shards(shards_dir, n_texts, dim)
+            elif n_done == n_texts and has_legacy:
+                self._log(
+                    f"Resuming complete legacy embedding checkpoint "
+                    f"({n_done}/{n_texts})."
                 )
                 memmap = np.lib.format.open_memmap(partial_path, mode="r")
-                if memmap.shape != (n_texts, dim):
-                    self._log("Embedding checkpoint shape mismatch; restarting.")
-                    del memmap
-                    memmap = None
-                    n_done = 0
-                    dim = None
-                    self._clear_embedding_checkpoints(embeddings_file_path)
-                else:
-                    embeddings = np.asarray(memmap, dtype=np.float32).copy()
-                    del memmap
-                    return embeddings
-            elif 0 < n_done < n_texts:
-                self._log(f"Resuming embeddings from row {n_done}/{n_texts}.")
-                memmap = np.lib.format.open_memmap(partial_path, mode="r+")
-                if memmap.shape != (n_texts, dim):
-                    self._log("Embedding checkpoint shape mismatch; restarting.")
-                    del memmap
-                    memmap = None
-                    n_done = 0
-                    dim = None
-                    self._clear_embedding_checkpoints(embeddings_file_path)
+                embeddings = np.asarray(memmap, dtype=np.float32).copy()
+                del memmap
+                return embeddings
+            elif 0 < n_done < n_texts and has_shards:
+                self._log(f"Resuming embeddings from row {n_done}/{n_texts} (shards).")
+            elif 0 < n_done < n_texts and has_legacy:
+                self._migrate_legacy_partial_to_shards(
+                    partial_path, shards_dir, n_done, dim
+                )
+                self._log(f"Resuming embeddings from row {n_done}/{n_texts} (shards).")
             else:
+                self._log("Incomplete embedding checkpoint; restarting.")
                 self._clear_embedding_checkpoints(embeddings_file_path)
                 n_done = 0
                 dim = None
         else:
-            if progress is not None or os.path.exists(partial_path):
+            if os.path.exists(partial_path) or os.path.isdir(shards_dir):
                 self._log("Incomplete embedding checkpoint; restarting.")
             self._clear_embedding_checkpoints(embeddings_file_path)
+
+        os.makedirs(shards_dir, exist_ok=True)
 
         while n_done < n_texts:
             end = min(n_done + batch_size, n_texts)
@@ -631,23 +716,22 @@ class BerTopicModelBuilder:
                 show_progress_bar=self._verbose,
             )
             batch = np.asarray(batch, dtype=np.float32)
-
-            if memmap is None:
+            if dim is None:
                 dim = int(batch.shape[1])
-                memmap = np.lib.format.open_memmap(
-                    partial_path,
-                    mode="w+",
-                    dtype=np.float32,
-                    shape=(n_texts, dim),
-                )
 
-            memmap[n_done:end] = batch
-            memmap.flush()
+            shard_path = self._embedding_shard_path(shards_dir, n_done, end)
+            self._log(
+                f"Saving shard {os.path.basename(shard_path)} "
+                f"({batch.nbytes / (1024 ** 2):.1f} MiB)..."
+            )
+            np.save(shard_path, batch)
             n_done = end
             self._write_embedding_progress(progress_path, n_texts, n_done, dim)
+            self._log(f"Checkpoint saved at row {n_done}/{n_texts}.")
 
-        embeddings = np.asarray(memmap, dtype=np.float32).copy()
-        del memmap
+        self._log(f"Assembling {n_texts} embedding rows from shards...")
+        embeddings = self._assemble_embedding_shards(shards_dir, n_texts, dim)
+        self._log("Shard assembly complete.")
         return embeddings
 
     def _load_embeddings(self) -> None:

@@ -88,7 +88,7 @@ class EmbeddingConfig:
     max_words: int
     spacy_model: str
     document_representation: Union[DocumentRepresentation, str]
-    encode_batch_size: int = 32768
+    encode_batch_size: int = 16384
     use_fp16: bool = True
 
     def __post_init__(self) -> None:
